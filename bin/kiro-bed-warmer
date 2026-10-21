@@ -1,0 +1,4 @@
+#!/bin/sh
+# Resolve symlinks so the CLI works when linked onto PATH.
+here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
+exec node "$here/../src/cli/main.ts" "$@"

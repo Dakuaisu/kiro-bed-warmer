@@ -1,0 +1,32 @@
+{
+  "name": "kiro-bed-warmer",
+  "version": "0.1.0",
+  "description": "Warm, shared kiro-cli ACP daemon exposed as an OpenAI-compatible endpoint for OpenCode",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "bin": {
+    "kiro-bed-warmer": "./bin/kiro-bed-warmer"
+  },
+  "scripts": {
+    "start": "node src/cli/main.ts start --foreground",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check src test plugin",
+    "format": "biome format --write src test plugin",
+    "test": "node --test --test-concurrency=1 --test-timeout=60000 test/unit/*.test.ts",
+    "test:integration": "node --test --test-concurrency=1 --test-timeout=600000 test/integration/*.test.ts",
+    "check": "npm run typecheck && npm run lint && npm test"
+  },
+  "dependencies": {
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.2",
+    "@opencode-ai/plugin": "1.18.30",
+    "@types/node": "26.6.5",
+    "typescript": "7.0.2"
+  }
+}

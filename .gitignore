@@ -1,0 +1,6 @@
+node_modules/
+.codegraph
+.kiro/
+.omo/
+*.log
+.DS_Store

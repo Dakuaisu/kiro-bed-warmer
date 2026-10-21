@@ -40,6 +40,8 @@ export class KiroProcess {
   private readonly listeners = new Map<string, Listener>();
   private stderrTail = "";
   private alive = false;
+  /** initialize succeeded; a process that dies before this never served sessions. */
+  started = false;
   createdSessions = 0;
   liveSessions = new Set<string>();
   models: ModelInfo[] = [];
@@ -89,6 +91,7 @@ export class KiroProcess {
         INIT_TIMEOUT_MS,
       ),
     );
+    this.started = true;
     this.log.info("acp.started", {
       proc: this.id,
       pid: child.pid,
@@ -151,9 +154,11 @@ export class KiroProcess {
     if (!child || !this.alive) return 0;
     const t0 = Date.now();
     await new Promise<void>((resolve) => {
-      const timer = setTimeout(() => child.kill("SIGTERM"), 5000);
+      const term = setTimeout(() => child.kill("SIGTERM"), 5000);
+      const kill = setTimeout(() => child.kill("SIGKILL"), 8000);
       child.once("exit", () => {
-        clearTimeout(timer);
+        clearTimeout(term);
+        clearTimeout(kill);
         resolve();
       });
       child.stdin.end();
@@ -211,8 +216,10 @@ export class KiroProcess {
       const c = CompactionStatus.safeParse(params);
       const status = c.success ? c.data.status : undefined;
       const type = typeof status === "string" ? status : status?.type;
-      if (c.success && c.data.sessionId && type === "completed")
-        this.emit(c.data.sessionId, { kind: "compacted" });
+      // Progress notices count as activity so a long compaction is not cancelled as a stall.
+      if (c.success && c.data.sessionId) {
+        this.emit(c.data.sessionId, type === "completed" ? { kind: "compacted" } : { kind: "other", method });
+      }
       return;
     }
     const other = SessionScoped.safeParse(params);

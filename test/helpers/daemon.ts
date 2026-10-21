@@ -14,20 +14,24 @@ export type Daemon = {
 };
 
 let nextPort = 48100 + Math.floor(Math.random() * 500);
+export const freePort = (): number => nextPort++;
+
+/** Write a `kiro-cli` stand-in that runs the fake fixture; returns its path. */
+export function fakeKiroBin(dir: string): string {
+  const bin = join(dir, "fake-kiro-cli");
+  writeFileSync(
+    bin,
+    `#!/bin/sh\nexec "${process.execPath}" "${join(ROOT, "test/fixtures/fake-kiro.ts")}" "$@"\n`,
+  );
+  chmodSync(bin, 0o755);
+  return bin;
+}
 
 /** Start an isolated daemon (own state dir and port). `kiroBin` defaults to the fake kiro-cli. */
 export async function startDaemon(env: Record<string, string> = {}, kiroBin?: string): Promise<Daemon> {
   const stateDir = tempDir("state");
-  const port = nextPort++;
-  let bin = kiroBin;
-  if (!bin) {
-    bin = join(stateDir, "fake-kiro-cli");
-    writeFileSync(
-      bin,
-      `#!/bin/sh\nexec "${process.execPath}" "${join(ROOT, "test/fixtures/fake-kiro.ts")}" "$@"\n`,
-    );
-    chmodSync(bin, 0o755);
-  }
+  const port = freePort();
+  const bin = kiroBin ?? fakeKiroBin(stateDir);
   const child = spawn(process.execPath, [join(ROOT, "src/cli/main.ts"), "start", "--foreground"], {
     env: {
       ...process.env,

@@ -107,16 +107,12 @@ describe("planRequest", () => {
     assert.equal(plan.kind === "catch_up" && plan.messages.length, 4);
   });
 
-  it("identical retry after an error -> resend last user message", () => {
+  it("identical retry: nudge after a cancelled turn, resend after a kiro error", () => {
     const known = [user("one")];
-    const plan = planRequest(
-      view(known, { lastOutcome: "interrupted" }),
-      known,
-      fps(known),
-      SYS,
-      "redeliver",
-    );
-    assert.deepEqual(plan, { kind: "delta", messages: [user("one")] });
+    const after = (o: SessionView["lastOutcome"]) =>
+      planRequest(view(known, { lastOutcome: o }), known, fps(known), SYS, "redeliver");
+    assert.deepEqual(after("interrupted"), { kind: "retry" });
+    assert.deepEqual(after("failed"), { kind: "delta", messages: [user("one")] });
   });
 });
 

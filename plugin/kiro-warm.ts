@@ -5,6 +5,7 @@ import { errorMessage } from "../src/log.ts";
 
 const PROVIDER_ID = "kiro-warm";
 const HEALTH_CACHE_MS = 5000;
+const START_FAILURE_BACKOFF_MS = 30_000;
 
 /**
  * Companion plugin for the `kiro-warm` provider: starts the daemon on demand, injects baseURL + bearer token
@@ -15,6 +16,7 @@ export const KiroWarmPlugin: Plugin = async ({ directory }) => {
   const cfg = loadConfig(process.env);
   let token: string | undefined;
   let checkedAt = 0;
+  let failure: { at: number; err: unknown } | undefined;
 
   const ensure = async (): Promise<string> => {
     if (token && Date.now() - checkedAt < HEALTH_CACHE_MS) return token;
@@ -22,10 +24,18 @@ export const KiroWarmPlugin: Plugin = async ({ directory }) => {
       checkedAt = Date.now();
       return token;
     }
-    const started = await ensureDaemon(cfg, { warmCwd: directory });
-    token = started.token;
-    checkedAt = Date.now();
-    return token;
+    // Don't make every request wait on a start that just failed (e.g. port taken).
+    if (failure && Date.now() - failure.at < START_FAILURE_BACKOFF_MS) throw failure.err;
+    try {
+      const started = await ensureDaemon(cfg, { warmCwd: directory });
+      token = started.token;
+      checkedAt = Date.now();
+      failure = undefined;
+      return token;
+    } catch (err) {
+      failure = { at: Date.now(), err };
+      throw err;
+    }
   };
 
   void ensure()

@@ -75,8 +75,11 @@ export class Bridge {
     if (!this.conn) return true;
     const target = this.version;
     const listed = new Promise<void>((resolve) => {
-      const timer = setTimeout(done, waitMs);
       const self = this;
+      const timer = setTimeout(() => {
+        self.log.warn("bridge.tools_not_relisted", { bridge: self.id, waitMs, tools: tools.length });
+        done();
+      }, waitMs);
       function done(): void {
         clearTimeout(timer);
         self.listWaiters.delete(check);

@@ -70,12 +70,22 @@ export async function ensureDaemon(
       ...(opts.debug ? { KBW_DEBUG: "1" } : {}),
     },
   });
+  let exited: number | null | undefined;
+  child.once("exit", (code) => {
+    exited = code;
+  });
   child.unref();
   const deadline = Date.now() + (opts.waitMs ?? 15_000);
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 100));
     const h = await health(cfg, token, 500);
     if (h) return { token, health: h };
+    // Exit code 3 = another daemon holds the lock and may still be starting; keep polling for it.
+    if (exited !== undefined && exited !== 3) {
+      throw new Error(
+        `kiro-bed-warmer exited during startup (code ${exited}; port ${cfg.port} in use?); see ${statePaths(cfg).logFile}`,
+      );
+    }
   }
   throw new Error(`kiro-bed-warmer did not become healthy; see ${statePaths(cfg).logFile}`);
 }

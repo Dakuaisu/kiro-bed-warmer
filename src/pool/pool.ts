@@ -145,7 +145,9 @@ export class Pool {
     try {
       await proc.start();
     } catch (err) {
-      this.procs.splice(this.procs.indexOf(proc), 1);
+      // onExit may already have removed it; splice(-1) would drop an unrelated healthy process.
+      const i = this.procs.indexOf(proc);
+      if (i >= 0) this.procs.splice(i, 1);
       void proc.stop();
       throw err;
     }
@@ -162,7 +164,8 @@ export class Pool {
         s.bridge.close();
       }
     }
-    if (this.closed) return;
+    // Start failures are reported to the caller by spawn(); re-warming here would retry a broken kiro-cli.
+    if (this.closed || !proc.started) return;
     // Respawn in the background and re-warm recent cwds so the next request is still fast.
     for (const cwd of this.recentCwds) void this.ensureSpare(cwd);
   }

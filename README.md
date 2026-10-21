@@ -200,7 +200,7 @@ by reason.
 ## Tests
 
 ```sh
-npm run check              # tsc + biome + 31 unit tests (fake kiro-cli: diffing, tool mapping, batching, stall, abort, crash, auth)
+npm run check              # tsc + biome + 40 unit tests (fake kiro-cli: diffing, tool mapping, batching, stall, abort, crash, auth, regressions)
 npm run test:integration   # real kiro-cli, claude-haiku-4.5: context across turns w/o session/load, parallel tool round-trip
 ```
 

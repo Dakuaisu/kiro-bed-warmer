@@ -53,7 +53,7 @@ function mapStop(stop: string): FinishReason {
 /** One ACP `session/prompt`, possibly spanning several HTTP requests via suspended tool calls. */
 export class Turn {
   state: "running" | "awaiting_tools" | "done" = "running";
-  outcome: "completed" | "interrupted" = "interrupted";
+  outcome: "completed" | "interrupted" | "failed" = "interrupted";
   readonly done: Promise<void>;
   private sink: TurnSink | undefined;
   private readonly buffered: Array<(s: TurnSink) => void> = [];
@@ -86,6 +86,11 @@ export class Turn {
       (stop) => this.onStop(stop),
       (err: unknown) => this.onError(err),
     );
+  }
+
+  /** Still working for a client. Aborted turns waiting on kiro's cancel ack do not count. */
+  get active(): boolean {
+    return this.state !== "done" && !this.aborted;
   }
 
   get pendingToolIds(): string[] | undefined {
@@ -186,10 +191,7 @@ export class Turn {
     this.sink = undefined;
     sink.toolCalls(calls.map(({ id, name, args }) => ({ id, name, args })));
     sink.finish("tool_calls", this.info());
-    this.toolTimer = setTimeout(
-      () => this.failCalls(`Tool result not received within ${this.timing.toolTimeoutMs / 60_000} min`),
-      this.timing.toolTimeoutMs,
-    );
+    this.toolTimer = setTimeout(() => this.abort("tool_timeout"), this.timing.toolTimeoutMs);
   }
 
   private armStall(): void {
@@ -218,6 +220,7 @@ export class Turn {
   private onError(err: unknown): void {
     this.finalize();
     if (this.aborted) return;
+    this.outcome = "failed";
     const e = classifyError(err, this.proc.isAlive);
     this.log.warn("turn.error", { acpId: this.acpId, kind: e.kind, err: e.message });
     this.sink?.fail(e);

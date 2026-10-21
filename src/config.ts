@@ -10,7 +10,7 @@ const EnvSchema = z.object({
   KBW_STALL_SECONDS: intFrom(30),
   KBW_IDLE_SHUTDOWN_MINUTES: intFrom(120),
   KBW_SESSION_IDLE_MINUTES: intFrom(180),
-  KBW_TOOL_TIMEOUT_MINUTES: intFrom(45),
+  KBW_TOOL_TIMEOUT_MINUTES: z.coerce.number().positive().default(45),
   KBW_MAX_SESSIONS_PER_PROCESS: intFrom(24),
   KBW_MAX_CREATED_PER_PROCESS: intFrom(150),
   KBW_SPARE_CWDS: intFrom(4),

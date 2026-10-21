@@ -7,10 +7,12 @@ import type { KiroSession, Pool } from "../pool/pool.ts";
 import { firstDiff, systemDiff, tracked } from "./diag.ts";
 import { fingerprint, hashSystem, type Msg, normalize } from "./messages.ts";
 import { type Plan, planRequest, type SessionView } from "./plan.ts";
-import { catchUpPrompt, deltaPrompt, seedPrompt } from "./prompt.ts";
+import { catchUpPrompt, deltaPrompt, retryPrompt, seedPrompt } from "./prompt.ts";
 import { classifyError, Turn, type TurnSink } from "./turn.ts";
 
 const INSTRUCTION_HIGH_WATER_PCT = 70;
+/** How long to wait for kiro to acknowledge session/cancel before giving up on the session. */
+const CANCEL_ACK_MS = 5000;
 
 type Live = {
   key: string;
@@ -22,6 +24,8 @@ type Live = {
   system: string;
   systemHash: string | undefined;
   needInstructions: boolean;
+  /** Instructions were re-sent since context last crossed the high-water mark. */
+  highWaterSent: boolean;
   lastOutcome: SessionView["lastOutcome"];
   contextPct: number;
   turn: Turn | undefined;
@@ -46,6 +50,7 @@ export class Router {
     requests: 0,
     continuations: 0,
     deltas: 0,
+    retries: 0,
     catchUps: 0,
     resets: {} as Record<string, number>,
   };
@@ -61,7 +66,7 @@ export class Router {
   }
 
   activeTurns(): number {
-    return [...this.live.values()].filter((l) => l.turn && l.turn.state !== "done").length;
+    return [...this.live.values()].filter((l) => l.turn?.active).length;
   }
 
   liveCount(): number {
@@ -107,17 +112,16 @@ export class Router {
       this.drop(key);
       live = undefined;
     }
-    if (live?.turn && live.turn.state === "running") {
-      live.turn.abort("superseded");
-      await live.turn.done;
+    if (live?.turn && live.turn.state === "running" && !(await this.settle(key, live.turn, "superseded"))) {
+      live = undefined;
     }
     const plan0 = planRequest(live && this.view(live), conv.messages, fps, sysHash, this.cfg.onSystemChange);
     let plan: Plan = plan0;
     if (plan0.kind === "abort_tools" && live?.turn) {
-      live.turn.abort("opencode continued without the pending tool results");
-      await live.turn.done;
-      live.lastOutcome = "interrupted";
-      plan = planRequest(this.view(live), conv.messages, fps, sysHash, this.cfg.onSystemChange);
+      const ok = await this.settle(key, live.turn, "opencode continued without the pending tool results");
+      if (ok) live.lastOutcome = "interrupted";
+      else live = undefined;
+      plan = planRequest(live && this.view(live), conv.messages, fps, sysHash, this.cfg.onSystemChange);
     }
     if (plan.kind === "continue_tools" && live?.turn) {
       this.stats.continuations++;
@@ -129,17 +133,25 @@ export class Router {
       return;
     }
     let blocks: ReturnType<typeof seedPrompt>;
-    if (plan.kind === "delta" || plan.kind === "catch_up") {
+    if (plan.kind === "delta" || plan.kind === "catch_up" || plan.kind === "retry") {
       if (!live) throw new Error("internal: delta without live session");
+      const highWater = live.contextPct >= INSTRUCTION_HIGH_WATER_PCT && !live.highWaterSent;
       const redeliver =
         live.needInstructions ||
         (live.systemHash !== sysHash && this.cfg.onSystemChange === "redeliver") ||
-        live.contextPct >= INSTRUCTION_HIGH_WATER_PCT;
+        highWater;
       const system = redeliver && conv.system ? conv.system : undefined;
-      blocks =
-        plan.kind === "delta" ? deltaPrompt(system, plan.messages) : catchUpPrompt(system, plan.messages);
-      if (plan.kind === "delta") this.stats.deltas++;
-      else this.stats.catchUps++;
+      if (system && live.contextPct >= INSTRUCTION_HIGH_WATER_PCT) live.highWaterSent = true;
+      if (plan.kind === "delta") {
+        blocks = deltaPrompt(system, plan.messages);
+        this.stats.deltas++;
+      } else if (plan.kind === "retry") {
+        blocks = retryPrompt(system);
+        this.stats.retries++;
+      } else {
+        blocks = catchUpPrompt(system, plan.messages);
+        this.stats.catchUps++;
+      }
     } else {
       const reason = plan.kind === "reset" ? plan.reason : "unknown_session";
       const hasHistory = conv.messages.some((m) => m.role !== "user");
@@ -173,10 +185,13 @@ export class Router {
     };
     const hooks = {
       onMetadata: (m: Metadata) => {
-        if (m.contextUsagePercentage !== undefined) target.contextPct = m.contextUsagePercentage;
+        if (m.contextUsagePercentage === undefined) return;
+        target.contextPct = m.contextUsagePercentage;
+        if (target.contextPct < INSTRUCTION_HIGH_WATER_PCT) target.highWaterSent = false;
       },
       onCompacted: () => {
         target.needInstructions = true;
+        target.highWaterSent = false;
       },
     };
     const { proc, acpId, bridge } = live.s;
@@ -187,6 +202,29 @@ export class Router {
       target.lastUsed = Date.now();
     });
     this.watchAbort(turn, signal, done);
+  }
+
+  /**
+   * Abort a turn and wait (bounded) for kiro to acknowledge. kiro that ignores session/cancel (it is often
+   * stalled when we get here) must not freeze this opencode session, so on timeout the kiro session is dropped
+   * and the caller rebuilds from history. Returns false when the session was dropped.
+   */
+  private async settle(key: string, turn: Turn, reason: string): Promise<boolean> {
+    turn.abort(reason);
+    let timer: NodeJS.Timeout | undefined;
+    const acked = await Promise.race([
+      turn.done.then(() => true),
+      new Promise<boolean>((r) => {
+        timer = setTimeout(() => r(false), CANCEL_ACK_MS);
+      }),
+    ]);
+    clearTimeout(timer);
+    if (!acked) {
+      this.log.warn("router.cancel_unacked", { key, reason, waitedMs: CANCEL_ACK_MS });
+      this.drop(key);
+      this.stats.resets.cancel_unacked = (this.stats.resets.cancel_unacked ?? 0) + 1;
+    }
+    return acked;
   }
 
   private watchAbort(turn: Turn, signal: AbortSignal, done: Promise<void>): void {
@@ -218,6 +256,7 @@ export class Router {
       system: "",
       systemHash: undefined,
       needInstructions: true,
+      highWaterSent: false,
       lastOutcome: "none",
       contextPct: 0,
       turn: undefined,
@@ -256,7 +295,7 @@ export class Router {
   /** Evict idle sessions; called periodically. */
   sweep(now = Date.now()): void {
     for (const [key, l] of this.live) {
-      const idle = !l.turn || l.turn.state === "done";
+      const idle = !l.turn?.active;
       if (idle && now - l.lastUsed > this.cfg.sessionIdleMs) this.drop(key);
     }
   }

@@ -6,7 +6,7 @@ export type SessionView = {
   history: readonly string[];
   systemHash: string | undefined;
   /** Whether kiro produced the latest assistant output itself (vs. interrupted / answered elsewhere). */
-  lastOutcome: "none" | "completed" | "interrupted";
+  lastOutcome: "none" | "completed" | "interrupted" | "failed";
   /** Tool-call ids handed to opencode and still awaited, when a turn is suspended. */
   pendingToolIds: readonly string[] | undefined;
 };
@@ -16,6 +16,7 @@ export type Plan =
   | { kind: "abort_tools" }
   | { kind: "delta"; messages: Msg[] }
   | { kind: "catch_up"; messages: Msg[] }
+  | { kind: "retry" }
   | { kind: "reset"; reason: string };
 
 export function isPrefix(prefix: readonly string[], full: readonly string[]): boolean {
@@ -73,9 +74,11 @@ export function planRequest(
     return { kind: "reset", reason: "system_changed" };
   }
   if (suffix.length === 0) {
-    // Same history again (client retry after an error): repeat the last user message, else nudge.
+    // Same history again (client retry). kiro keeps a cancelled prompt in its history (verified on 2.33), so
+    // after a cancel/stall only nudge; after a kiro error the prompt may not have been recorded, so resend it.
     const last = messages.at(-1);
-    return last?.role === "user" ? { kind: "delta", messages: [last] } : { kind: "catch_up", messages: [] };
+    if (last?.role !== "user") return { kind: "catch_up", messages: [] };
+    return view.lastOutcome === "failed" ? { kind: "delta", messages: [last] } : { kind: "retry" };
   }
   const ours = view.lastOutcome === "completed" && suffix[0]?.role === "assistant";
   const rest = ours ? suffix.slice(1) : suffix;

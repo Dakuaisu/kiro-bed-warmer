@@ -71,6 +71,20 @@ export function deltaPrompt(system: string | undefined, users: Msg[]): PromptBlo
   return userBlocks(system ? [instructions(system)] : [], users);
 }
 
+/** Same request again after a cancelled turn: the user message is already in kiro's history. */
+export function retryPrompt(system: string | undefined): PromptBlock[] {
+  return userBlocks(system ? [instructions(system)] : [], []).map((b) =>
+    b.type === "text"
+      ? {
+          type: "text",
+          text: [b.text, "Your previous reply was interrupted. Answer my last message now."]
+            .filter(Boolean)
+            .join("\n\n"),
+        }
+      : b,
+  );
+}
+
 /** Live session, but some messages happened elsewhere (other model, interrupted turn). */
 export function catchUpPrompt(system: string | undefined, messages: Msg[]): PromptBlock[] {
   let lastUser = messages.length;

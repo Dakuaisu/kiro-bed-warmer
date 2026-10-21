@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
   chmodSync,
@@ -65,12 +66,13 @@ export function ensureToken(cfg: Config): string {
   return token;
 }
 
-function pidAlive(pid: number): boolean {
+/** True only if `pid` is alive and is a kiro-bed-warmer daemon (PIDs get reused after a crash). */
+function isDaemonPid(pid: number): boolean {
   try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code === "EPERM";
+    const cmd = execFileSync("/bin/ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" });
+    return cmd.includes("cli/main.ts") && cmd.includes(" start");
+  } catch {
+    return false;
   }
 }
 
@@ -78,7 +80,7 @@ export function readLockPid(cfg: Config): number | undefined {
   const { lockFile } = statePaths(cfg);
   if (!existsSync(lockFile)) return undefined;
   const pid = Number.parseInt(readFileSync(lockFile, "utf8"), 10);
-  return Number.isFinite(pid) && pidAlive(pid) ? pid : undefined;
+  return Number.isFinite(pid) && pid > 0 && isDaemonPid(pid) ? pid : undefined;
 }
 
 /** Take the single-daemon lock. Returns false when another live daemon holds it. */

@@ -1,61 +1,102 @@
-# kiro-bed-warmer
+<div align="center">
 
-One long-lived, pre-warmed `kiro-cli acp` daemon shared by every OpenCode window and subagent, exposed as an
-OpenAI-compatible endpoint (`kiro-warm` provider). It removes kiro-cli startup cost from the hot path and turns
-silent Kiro stalls into retryable errors so omo can fall back.
+# 🔥 kiro-bed-warmer
 
-It talks to Kiro **only through `kiro-cli acp`** (default v2 engine). It never calls Kiro/CodeWhisperer HTTP APIs,
-never reads or copies kiro-cli tokens or its SQLite store, and never spoofs IDE headers.
+**One warm `kiro-cli` for every OpenCode window and subagent.**
 
-## What it changes (and what it doesn't)
+A local daemon that keeps `kiro-cli acp` hot and serves it as an OpenAI-compatible provider,<br/>
+so Kiro models start fast and stalls fall back to another model instead of hanging.
 
-Measured on this machine (2026-10-21, `claude-haiku-4.5`, `kiro-bed-warmer bench`, medians of 3; the existing
-`kiro` provider vs `kiro-warm`, both through real `opencode run`):
+[![Node](https://img.shields.io/badge/node-%E2%89%A5%2024-339933?logo=node.js&logoColor=white)](https://nodejs.org)
+[![OpenCode](https://img.shields.io/badge/opencode-1.18.x-111111)](https://opencode.ai)
+[![Platform](https://img.shields.io/badge/platform-macOS-000000?logo=apple&logoColor=white)](#requirements)
+[![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](#development)
+[![Tests](https://img.shields.io/badge/tests-49%20unit%20%2B%202%20integration-brightgreen)](#development)
 
-| metric | kiro-warm | kiro |
-|---|---|---|
-| new window: `opencode run` wall time | 8.43 s | 15.77 s |
-| new window: user msg → first output | 6.36 s | 13.57 s |
-| subagent: user msg → first output | 1.47 s | 5.87 s |
-| new message, turns 2–4 (long-lived `opencode serve`) | 1.34 s | 1.78 s |
-| new message, last 3 of 50 turns | 1.16 s | 1.51 s |
-| tool result → next step output | 1.31 s | 1.33 s |
+[Quick start](#quick-start) · [Benchmarks](#benchmarks) · [Configuration](#configuration) · [How it works](#how-it-works) · [Security](#security) · [Troubleshooting](#troubleshooting)
 
-- **First message per window: ~7 s faster.** No `kiro-cli settings`/`whoami` exec, no spawn/initialize, and a
-  spare kiro session is pre-created for the window's directory when the plugin loads.
-- **Each Kiro subagent: ~4.4 s faster.** Subagents take a spare session from the warm process instead of spawning
-  kiro-cli.
-- **Each new message: ≥0.4 s faster, growing with history.** A live session is never `session/load`ed; only the
-  new user message is sent. The bench sessions are tiny (one-word turns), so this row understates real sessions,
-  where `session/load` grows with history.
-- **Per tool step: unchanged** (model-bound), as expected.
-- **Stalls are capped**: no ACP output for `KBW_STALL_SECONDS` (default 30) → the step fails with a retryable
-  503 that omo's `runtime_fallback` turns into a retry on the fallback model.
+</div>
 
-It does **not** make the model faster. In real use, bridge overhead was ~3 of 66 minutes.
+---
+
+## Why
+
+The stock Kiro bridge for OpenCode starts a fresh `kiro-cli` for every window, every subagent and every toolless call. It also runs `settings` and `whoami` before each spawn and calls `session/load` on every new message. That startup cost comes back many times per session.
+
+kiro-bed-warmer pays that cost **once**:
+
+- **Warm.** One long-lived `kiro-cli acp` process, with a spare session already created for each working directory.
+- **Shared.** Every window and every subagent uses it.
+- **Fail-fast.** A silent Kiro stall becomes a retryable `503`, so omo's `runtime_fallback` can move the step to another model.
+
+> [!NOTE]
+> This removes overhead around the model. It does not make the model faster. In real use, bridge overhead was about 3 of 66 minutes.
+
+## Benchmarks
+
+Measured with `kiro-bed-warmer bench` on `claude-haiku-4.5`, medians of 3 runs, both providers through real `opencode run`:
+
+| Scenario | `kiro` | `kiro-warm` | Saved |
+|---|---:|---:|---:|
+| New window: `opencode run` wall time | 15.77 s | **8.43 s** | −7.3 s |
+| New window: user message → first output | 13.57 s | **6.36 s** | −7.2 s |
+| Subagent: user message → first output | 5.87 s | **1.47 s** | −4.4 s |
+| New message, turns 2–4 | 1.78 s | **1.34 s** | −0.4 s |
+| New message, last 3 of 50 turns | 1.51 s | **1.16 s** | −0.35 s |
+| Tool result → next step output | 1.33 s | 1.31 s | — (model-bound) |
+
+The per-message saving grows with history, because live sessions are never `session/load`ed. The benchmark used one-word turns, so real sessions save more than this table shows.
+
+## Features
+
+- ⚡ **Pre-warmed sessions.** The plugin creates a spare session for a window's directory as soon as it loads.
+- 🧵 **Live session routing.** OpenCode sessions map to live Kiro sessions, and only the new user message is sent.
+- 🛠️ **Native tool calls.** Kiro's MCP calls stream out as OpenAI `tool_calls`. Calls are batched over 100 ms, so parallel calls arrive in a single step.
+- 🧯 **Stall guard.** If Kiro is silent for longer than `KBW_STALL_SECONDS`, the step fails with a retryable `503`.
+- 🔁 **Self-healing.** Reverts, edits, compaction, forks, daemon restarts and kiro-cli crashes all rebuild the Kiro session from history.
+- 🔒 **Local only.** The daemon listens on `127.0.0.1` only, and every route needs a bearer token.
+- 🧹 **Leaves your repos alone.** It writes no `.kiro/agents` files into your projects and loads none of your Kiro MCP config.
+- 📊 **Observable.** JSON-lines logs, a `/metrics` endpoint, and a `--debug` mode that times every ACP call.
+
+## Compliance by design
+
+kiro-bed-warmer talks to Kiro **only through `kiro-cli acp`**, using the default v2 engine. It does **not**:
+
+- call Kiro or CodeWhisperer HTTP APIs directly,
+- read, copy or refresh kiro-cli tokens or its SQLite store,
+- spoof IDE headers.
+
+Authentication stays with `kiro-cli`.
 
 ## Requirements
 
-- macOS, Node ≥ 24 (runs the TypeScript sources directly via Node's type stripping, so there is no build step).
-- `kiro-cli` on `PATH`, logged in (`kiro-cli login`).
-- `/usr/bin/nc` (ships with macOS). The per-session MCP relay uses `nc -U`; there is a Node relay fallback.
-- OpenCode 1.18.x (plugin API v1).
+| | |
+|---|---|
+| OS | macOS (uses `/usr/bin/nc -U`; a Node relay is used if it's missing) |
+| Runtime | Node **≥ 24**. The TypeScript sources run directly via type stripping, so there is no build step. |
+| Kiro | `kiro-cli` on `PATH` and logged in (`kiro-cli login`) |
+| OpenCode | **1.18.x** (plugin API v1) |
+| Optional | oh-my-openagent (omo) ≥ 4.19 for stall fallback |
+
+## Quick start
+
+### 1. Install
 
 ```sh
-cd ~/kiro_bed_warmer && npm ci      # local devDependencies only; nothing global
+git clone https://github.com/Dakuaisu/kiro-bed-warmer.git ~/kiro-bed-warmer
+cd ~/kiro-bed-warmer
+npm ci          # local devDependencies only, nothing global
 ```
 
-## OpenCode configuration
+### 2. Register the plugin and provider
 
-The companion plugin starts the daemon on demand, injects `baseURL` and the bearer token into the provider
-options **in memory** (the token is never written into `opencode.json`), adds the window's directory as a header,
-and pre-warms a session for it. Add this to `~/.config/opencode/opencode.json` (I have not edited it):
+Add this to `~/.config/opencode/opencode.json`. Replace `<ABSOLUTE_PATH>` with the clone location, for example `/Users/you/kiro-bed-warmer`.
 
 ```jsonc
 {
   "plugin": [
-    // keep your existing entries, e.g. "opencode-kiro@0.4.0"
-    "file:///Users/apple/kiro_bed_warmer/plugin/kiro-warm.ts"
+    // keep your existing plugins
+    "file://<ABSOLUTE_PATH>/plugin/kiro-warm.ts"
   ],
   "provider": {
     "kiro-warm": {
@@ -77,132 +118,190 @@ and pre-warms a session for it. Add this to `~/.config/opencode/opencode.json` (
 }
 ```
 
-- `@ai-sdk/openai-compatible` is **bundled inside the opencode 1.18.30 binary** and is not installed from npm, so
-  the `npm` field cannot be version-pinned. Pinning means pinning opencode.
-- Any model kiro-cli offers can be listed. Run `GET /v1/models` (or `kiro-bed-warmer status`) for the current set:
-  `auto claude-opus-5.5 claude-sonnet-5.5 claude-opus-5 claude-sonnet-5 claude-opus-4.8 gpt-5.6-sol gpt-5.6-terra
-  gpt-5.6-luna claude-opus-4.7 claude-opus-4.6 claude-sonnet-4.6 claude-opus-4.5 claude-sonnet-4.5 claude-haiku-4.5
-  deepseek-3.2 minimax-m2.5 minimax-m2.1 glm-5 qwen3-coder-next`.
-- `kiro-warm` coexists with the existing `kiro` provider (`opencode-kiro@0.4.0`, untouched) for A/B use.
-- Without the plugin, set `options.apiKey` to the contents of `~/.local/state/kiro-bed-warmer/token` and start the
-  daemon yourself (`bin/kiro-bed-warmer start`). Without the cwd header, the daemon reads `Working directory:` from
-  opencode's system prompt.
+### 3. Run
 
-### omo fallback on stalls
+```sh
+opencode run -m kiro-warm/claude-sonnet-4.5 "hello"
+```
 
-Verified with omo 4.19.4 against a fake stalling kiro-cli, in a real `opencode serve`:
+That's it. The plugin starts the daemon when first needed and injects the token **in memory**, so the token is never written to `opencode.json`. The daemon exits after 2 hours idle.
 
-- `runtime_fallback` **must be enabled**. With only `model_fallback: true` (your current setting), omo marked a
-  pending fallback but its prompt gate skipped it ("latest assistant is still active") and nothing was retried.
-- With it enabled, both a 503 before any output and an error after partial text fell back within ~10 ms, and the
-  fallback model's answer landed in the same session.
-- omo picks the fallback target from the **agent's** `model` + `fallback_models` chain (it logged
-  "Derived model from agent config"), so put the model you want to land on right after the `kiro-warm` primary.
+<details>
+<summary><b>Available models</b></summary>
 
-Suggested `~/.omo/omo.jsonc` change (not applied):
+Any model kiro-cli offers can be added. Run `GET /v1/models` or `bin/kiro-bed-warmer status` for the current list:
+
+`auto` `claude-opus-5.5` `claude-sonnet-5.5` `claude-opus-5` `claude-sonnet-5` `claude-opus-4.8` `gpt-5.6-sol` `gpt-5.6-terra` `gpt-5.6-luna` `claude-opus-4.7` `claude-opus-4.6` `claude-sonnet-4.6` `claude-opus-4.5` `claude-sonnet-4.5` `claude-haiku-4.5` `deepseek-3.2` `minimax-m2.5` `minimax-m2.1` `glm-5` `qwen3-coder-next`
+
+</details>
+
+<details>
+<summary><b>Running without the plugin</b></summary>
+
+1. Start the daemon yourself:
+
+   ```sh
+   bin/kiro-bed-warmer start
+   ```
+
+2. Set the provider's `options.apiKey` to the output of:
+
+   ```sh
+   bin/kiro-bed-warmer token
+   ```
+
+Without the plugin's cwd header, the daemon reads `Working directory:` from OpenCode's system prompt instead.
+
+</details>
+
+> [!TIP]
+> `kiro-warm` works alongside the existing `kiro` provider (`opencode-kiro`), so you can A/B them in the same setup.
+
+## Stall fallback with omo
+
+Without fallback configured, a Kiro stall surfaces as a failed step. With omo's `runtime_fallback` enabled, the failed step is retried on the next model in your chain. In tests, this happened within about 10 ms, and the answer landed in the same session.
+
+Add this to `~/.omo/omo.jsonc`:
 
 ```jsonc
-"runtime_fallback": { "enabled": true, "retry_on_errors": [429, 500, 502, 503, 504], "max_fallback_attempts": 2 },
+"runtime_fallback": {
+  "enabled": true,
+  "retry_on_errors": [429, 500, 502, 503, 504],
+  "max_fallback_attempts": 2
+},
 "agents": {
   "sisyphus": {
     "model": "kiro-warm/claude-opus-5.5",
-    "fallback_models": ["anthropic/claude-opus-5-5", "kiro/claude-opus-5.5", "anthropic/claude-opus-5"]
+    "fallback_models": ["anthropic/claude-opus-5-5", "kiro/claude-opus-5.5"]
   }
 }
 ```
 
-Unverified: how omo's own `timeout_seconds` (default 30) interacts with `KBW_STALL_SECONDS` in a long real
-session. Keep the daemon's stall timeout ≤ omo's timeout so the daemon's 503 arrives first.
+> [!IMPORTANT]
+> `model_fallback: true` alone is **not enough**. In tests, omo marked a fallback as pending but never retried it.
+>
+> omo picks the fallback target from the agent's `fallback_models` chain. Keep `KBW_STALL_SECONDS` at or below omo's `timeout_seconds` (default 30), so the daemon's `503` arrives first.
 
-## Security
+## Configuration
 
-- The HTTP server binds **127.0.0.1 only**. **Every route, including `/health`, requires a bearer token.**
-- The token is 32 random bytes, generated on first run at `~/.local/state/kiro-bed-warmer/token` (mode `0600`,
-  dir `0700`). Any process running as your user can read it, the same as kiro-cli's own credentials. This is not a
-  boundary between local users or processes.
-- Each kiro session gets its own MCP bridge on a Unix socket in the `0700` state dir. The daemon auto-approves
-  kiro permission requests **only for tools from that bridge** (`@oc/<tool>`) and rejects anything else. The tools
-  are opencode's, and opencode executes them under its own permission rules.
-- kiro-cli built-in tools are disabled (agent config `tools: []`), and your Kiro MCP config is not loaded
-  (`includeMcpJson: false`). That agent config lives in the daemon's private work dir, never in your repos.
+All settings are environment variables:
 
-## How it works
-
-```
-opencode (window / subagent) ──OpenAI chat/completions (SSE, tools)──▶ daemon 127.0.0.1:47900
-  plugin: token, x-kbw-cwd, pre-warm                                  ├─ router: opencode session → live kiro session
-                                                                      ├─ pool: warm kiro-cli acp + spare session per cwd
-                                                                      ├─ bridge: per-session MCP over unix socket (nc -U)
-                                                                      └─ turn: tool batching, suspended turns, stall guard
-```
-
-- **Session key** is `x-session-affinity` (opencode sends it, plus `x-session-id`, and subagents add
-  `x-parent-session-id`). Toolless calls get their own key. Verified against opencode 1.18.30.
-- **New user turn**: if the request history is the known history plus our reply plus new user message(s), only the
-  new message goes to `session/prompt`.
-- **Tool calls**: kiro's MCP calls are batched for 100 ms and streamed as OpenAI `tool_calls` (`finish_reason:
-  tool_calls`). The ACP turn stays suspended until the next request brings the `role: tool` results. Parallel calls
-  arrive in one step.
-- **Divergence** (revert/undo, compaction, fork, unknown session after a daemon restart, crashed kiro-cli): the
-  daemon starts a fresh session from the pool and seeds it with a compact transcript, including tool calls and
-  results. Steps answered elsewhere (fallback model) are caught up as context. These events are logged as
-  `router.diverged`.
-- **Fingerprints** tolerate plugin rewrites of earlier user messages (omo injects reminders into them) and
-  opencode's pruning of old tool output.
-- **System prompt**: sent as `<system_instructions>` on the first prompt. It is re-sent when it really changes,
-  after kiro compacts, or above 70 % context. opencode lists skill paths in a different order per process, so the
-  change check ignores line order and skill `<location>` lines.
-- **Abort**: a client disconnect sends `session/cancel` and fails any pending tool calls. The session stays
-  reusable.
-- **Crash**: kiro-cli exit marks its sessions dead, the pool respawns and re-warms, and the router rebuilds from
-  history on the next request.
-- **Auth**: there is no `whoami` on the hot path. An ACP auth error returns HTTP 401 with "run `kiro-cli login`".
-
-### Deliberate deviations from the brief
-
-- **System prompt change → re-deliver, not reset** (`KBW_ON_SYSTEM_CHANGE=redeliver`). Every opencode process
-  reorders the skill list, so "reset on change" reset every multi-process session (observed: 3/3 resets). Set
-  `KBW_ON_SYSTEM_CHANGE=reset` to get the brief's behavior.
-- **MCP bridge is `nc -U` to a daemon Unix socket**, not a Node bridge process. It is per session and isolated
-  (verified: two sessions in one process only saw their own tools), supports `tools/list_changed`, and holds a tool
-  call for at least 200 s (kiro's HTTP MCP transport dropped calls at about 120 s, so HTTP MCP was not used).
-- **Node 24 instead of Bun**: Bun isn't installed here and installing it is a global change. Node runs the `.ts`
-  files directly; tests use `node:test`.
+| Variable | Default | Description |
+|---|---|---|
+| `KBW_PORT` | `47900` | HTTP port on `127.0.0.1` |
+| `KBW_STATE_DIR` | `~/.local/state/kiro-bed-warmer` | Token, lock, logs and sockets |
+| `KBW_STALL_SECONDS` | `30` | Seconds of ACP silence before a retryable `503` |
+| `KBW_TOOL_TIMEOUT_MINUTES` | `45` | Maximum wait for OpenCode to return tool results |
+| `KBW_IDLE_SHUTDOWN_MINUTES` | `120` | Daemon exits after this much idle time |
+| `KBW_SESSION_IDLE_MINUTES` | `180` | Idle Kiro sessions are dropped after this |
+| `KBW_MAX_SESSIONS_PER_PROCESS` | `24` | Sessions per `kiro-cli` before another process is spawned |
+| `KBW_SPARE_CWDS` | `4` | Directories that get a pre-warmed spare session |
+| `KBW_TOOL_BATCH_MS` | `100` | Window for batching parallel tool calls into one step |
+| `KBW_ENGINE` | `v2` | `v2` or `v3` ACP engine (v3 was slower in testing) |
+| `KBW_ON_SYSTEM_CHANGE` | `redeliver` | `redeliver` or `reset` when the system prompt changes |
+| `KBW_DEBUG` | — | `1` logs every ACP method with timings |
 
 ## CLI
 
 ```sh
 bin/kiro-bed-warmer start [--foreground] [--debug] [--warm <cwd>]
-bin/kiro-bed-warmer stop | status | token
+bin/kiro-bed-warmer stop
+bin/kiro-bed-warmer status
+bin/kiro-bed-warmer token
 bin/kiro-bed-warmer bench [--providers kiro,kiro-warm] [--model claude-haiku-4.5] [--runs 3] [--turns 50]
 ```
 
-Environment variables: `KBW_PORT` (47900), `KBW_STATE_DIR` (`~/.local/state/kiro-bed-warmer`),
-`KBW_STALL_SECONDS` (30), `KBW_IDLE_SHUTDOWN_MINUTES` (120), `KBW_SESSION_IDLE_MINUTES` (180),
-`KBW_TOOL_TIMEOUT_MINUTES` (45, which matches kiro's `mcp.noInteractiveTimeout`), `KBW_MAX_SESSIONS_PER_PROCESS`
-(24), `KBW_SPARE_CWDS` (4), `KBW_TOOL_BATCH_MS` (100), `KBW_ENGINE=v2|v3` (v2), `KBW_ON_SYSTEM_CHANGE`,
-`KBW_DEBUG=1` (logs every ACP method with timings).
+## HTTP API
 
-Logs are JSON lines in `<state>/daemon.log`. `GET /metrics` reports spare hits, deltas, continuations and resets
-by reason.
+Every route needs `Authorization: Bearer <token>`.
+
+| Route | Purpose |
+|---|---|
+| `POST /v1/chat/completions` | OpenAI chat completions with streaming (SSE) and tool calls |
+| `GET /v1/models` | Models offered by kiro-cli |
+| `POST /v1/warm` | Pre-warm a spare session for a directory |
+| `GET /health` | Liveness check |
+| `GET /metrics` | Spare hits, deltas, continuations, resets by reason, credits, context % |
+
+## How it works
+
+```text
+ opencode window / subagent
+   │  plugin: token · x-kbw-cwd · pre-warm
+   │  OpenAI chat/completions (SSE, tools)
+   ▼
+ ┌──────────────── kiro-bed-warmer · 127.0.0.1:47900 ────────────────┐
+ │ router   opencode session ──▶ live kiro session                   │
+ │ pool     warm kiro-cli acp  + spare session per cwd               │
+ │ bridge   per-session MCP over a 0700 unix socket (nc -U)          │
+ │ turn     tool batching · suspended turns · stall guard            │
+ └───────────────────────────────────────────────────────────────────┘
+   │  ACP JSON-RPC (stdio)
+   ▼
+ kiro-cli acp (v2)
+```
+
+<details>
+<summary><b>Request lifecycle in detail</b></summary>
+
+- **Session key.** The daemon keys sessions on the `x-session-affinity` header that OpenCode sends. Subagents also send `x-parent-session-id`. Toolless calls get their own key.
+- **New user turn.** If the incoming history is the known history plus new user messages, only the new messages go to `session/prompt`.
+- **Tool calls.** MCP calls are batched and streamed out with `finish_reason: tool_calls`. The ACP turn stays suspended until the next request brings the `role: tool` results.
+- **Edits and divergence.** Revert, edit, compaction, fork or an unknown session starts a fresh pooled session. It is seeded with a compact transcript of the history, including tool calls and results, and the event is logged as `router.diverged`.
+- **Fingerprints.** History matching tolerates plugin rewrites of earlier user messages (omo injects reminders) and OpenCode pruning old tool output. The last user message is compared exactly, so an edited resend is never dropped.
+- **System prompt.** It is sent as `<system_instructions>` with the first prompt. It is sent again when it really changes, after Kiro compacts, and once each time context usage crosses 70 %.
+- **Abort.** A client disconnect sends `session/cancel` and fails any pending tool calls. If Kiro doesn't confirm the cancel within 5 s, the session is rebuilt.
+- **Crash.** When kiro-cli exits, its sessions are marked dead and the pool respawns and re-warms. The router rebuilds the session on the next request.
+- **Auth.** There is no `whoami` call on the hot path. An ACP auth error returns HTTP `401` telling you to run `kiro-cli login`.
+
+</details>
+
+## Security
+
+> [!WARNING]
+> The bearer token protects against other local services and the browser. It is **not** a boundary between processes running as your user.
+
+- The daemon binds to **127.0.0.1 only**, and **every route, including `/health`,** needs the bearer token. Tokens are compared in constant time.
+- The token is 32 random bytes in `<state>/token` (file mode `0600`, directory `0700`). Any process running as your user can read it, just as it can read kiro-cli's own credentials.
+- Each Kiro session gets its own MCP bridge socket. Permission requests are auto-approved **only** for that bridge's `@oc/<tool>` tools; everything else is rejected. OpenCode runs the tools under its own permission rules.
+- kiro-cli's built-in tools are disabled (`tools: []`), and your Kiro MCP config is not loaded (`includeMcpJson: false`).
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| HTTP `401` "run `kiro-cli login`" | Your Kiro session expired. Run `kiro-cli login`. |
+| Daemon won't start | Port 47900 may be taken. Set `KBW_PORT` and update the provider's `baseURL` to match. |
+| Stalls fail instead of falling back | Enable omo `runtime_fallback` (see [Stall fallback with omo](#stall-fallback-with-omo)). |
+| Something looks wrong | Check `bin/kiro-bed-warmer status`, then `<state>/daemon.log`. For timings, restart with `--debug`. |
 
 ## Known limits
 
-- **Token usage is not reported**, because kiro-cli doesn't expose token counts. opencode shows 0 tokens and $0 for
-  `kiro-warm`, and will not auto-compact. kiro compacts its own context. Credits, context %, and turn duration are
-  in the final SSE chunk (`kiro` field) and `/metrics`.
-- The first message in a directory the plugin hasn't pre-warmed pays one `session/new` on the warm process
-  (about 0.3 s).
-- kiro-cli keeps its own session files in `~/.kiro/sessions/` for daemon sessions, as it does for the existing
-  provider.
-- There is no launchd agent: the plugin starts the daemon on demand and it exits after 2 h idle.
+- **No token counts.** kiro-cli doesn't report them, so OpenCode shows 0 tokens and $0 and won't auto-compact. Kiro compacts its own context. Credits and context % are in the final SSE chunk (`kiro` field) and in `/metrics`.
+- **Unwarmed directories.** The first message in a directory the plugin hasn't pre-warmed pays one `session/new`, about 0.3 s.
+- **Session files.** kiro-cli keeps its own session files in `~/.kiro/sessions/`, as the existing provider does.
+- **No launchd agent.** The daemon starts on demand and exits when idle.
+- **Unpinnable provider package.** `@ai-sdk/openai-compatible` is bundled inside the OpenCode binary, so pinning it means pinning OpenCode.
 
-## Tests
+## Development
 
 ```sh
-npm run check              # tsc + biome + 40 unit tests (fake kiro-cli: diffing, tool mapping, batching, stall, abort, crash, auth, regressions)
-npm run test:integration   # real kiro-cli, claude-haiku-4.5: context across turns w/o session/load, parallel tool round-trip
+npm run check              # tsc (strict) + biome + 49 unit tests against a fake kiro-cli
+npm run test:integration   # 2 tests against real kiro-cli on claude-haiku-4.5
 ```
 
-Tests use `/private/tmp/kbw-*` dirs and remove them, plus only the kiro session files whose cwd is under those
-dirs.
+- The unit tests cover history diffing, tool mapping, batching, stalls, abort, crash recovery, auth errors, and a regression test for each fixed bug.
+- Tests run in `/private/tmp/kbw-*` and clean up after themselves. That includes only the kiro session files whose cwd is under those directories.
+
+<details>
+<summary><b>Design decisions</b></summary>
+
+- **Node 24 instead of Bun.** Type stripping runs the `.ts` files directly, and it needs no global install.
+- **Unix-socket MCP bridge instead of HTTP MCP.** kiro's HTTP MCP transport dropped tool calls after about 120 s. The socket held a call for at least 200 s and keeps tool sets isolated per session.
+- **Re-deliver instead of reset on system prompt changes.** OpenCode lists skills in a different order in each process, so resetting on change reset every multi-process session.
+
+</details>
+
+<div align="center">
+<sub>Built for people who'd rather wait on the model than on the plumbing.</sub>
+</div>

@@ -80,7 +80,39 @@ Authentication stays with `kiro-cli`.
 
 ## Quick start
 
-### 1. Install
+### 1. Add the plugin
+
+Add one line to `~/.config/opencode/opencode.json`. OpenCode installs the package on next start:
+
+```jsonc
+{
+  "plugin": [
+    // keep your existing plugins
+    "kiro-bed-warmer@0.1.0"
+  ]
+}
+```
+
+The plugin registers the `kiro-warm` provider with every model kiro-cli offers (context limits, tool calls and, for Claude models, image input). Node ≥ 24 must be on `PATH`, because the daemon runs under Node.
+
+### 2. Optional: override models
+
+Add a `provider.kiro-warm` block only to rename models or change fields. Your fields win, and anything you leave out is filled in:
+
+```jsonc
+{
+  "provider": {
+    "kiro-warm": {
+      "models": {
+        "claude-opus-5.5": { "name": "Opus (warm)", "limit": { "output": 16000 } }
+      }
+    }
+  }
+}
+```
+
+<details>
+<summary><b>Running from a git checkout instead</b></summary>
 
 ```sh
 git clone https://github.com/Dakuaisu/kiro-bed-warmer.git ~/kiro-bed-warmer
@@ -88,37 +120,9 @@ cd ~/kiro-bed-warmer
 npm ci          # local devDependencies only, nothing global
 ```
 
-### 2. Register the plugin and provider
+Then use `"file://<ABSOLUTE_PATH>/plugin/kiro-warm.ts"` as the plugin entry. The checkout runs the TypeScript sources directly.
 
-Add the plugin to `~/.config/opencode/opencode.json`. Replace `<ABSOLUTE_PATH>` with the clone location, for example `/Users/you/kiro-bed-warmer`.
-
-The `provider` block below is **optional**: the plugin registers `kiro-warm` with every model kiro-cli offers (context limits, tool calls and, for Claude models, image input). Add the block only to rename models or override fields; your fields win, and anything you leave out is filled in.
-
-```jsonc
-{
-  "plugin": [
-    // keep your existing plugins
-    "file://<ABSOLUTE_PATH>/plugin/kiro-warm.ts"
-  ],
-  "provider": {
-    "kiro-warm": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "Kiro (warm daemon)",
-      "options": { "baseURL": "http://127.0.0.1:47900/v1" },
-      "models": {
-        "claude-opus-5.5":   { "name": "Claude Opus 5.5 (warm)",   "tool_call": true, "limit": { "context": 1000000, "output": 32000 } },
-        "claude-opus-5":     { "name": "Claude Opus 5 (warm)",     "tool_call": true, "limit": { "context": 1000000, "output": 32000 } },
-        "claude-sonnet-5.5": { "name": "Claude Sonnet 5.5 (warm)", "tool_call": true, "limit": { "context": 1000000, "output": 32000 } },
-        "claude-sonnet-4.5": { "name": "Claude Sonnet 4.5 (warm)", "tool_call": true, "limit": { "context": 200000,  "output": 32000 } },
-        "claude-haiku-4.5":  { "name": "Claude Haiku 4.5 (warm)",  "tool_call": true, "limit": { "context": 200000,  "output": 32000 } },
-        "gpt-5.6-sol":       { "name": "GPT 5.6 Sol (warm)",       "tool_call": true, "limit": { "context": 1000000, "output": 32000 } },
-        "gpt-5.6-luna":      { "name": "GPT 5.6 Luna (warm)",      "tool_call": true, "limit": { "context": 1000000, "output": 32000 } },
-        "auto":              { "name": "Kiro auto (warm)",         "tool_call": true, "limit": { "context": 200000,  "output": 32000 } }
-      }
-    }
-  }
-}
-```
+</details>
 
 ### 3. Run
 

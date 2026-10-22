@@ -5,7 +5,7 @@ import { errorMessage, type Logger } from "../log.ts";
 import type { McpTool } from "../mcp/bridge.ts";
 import type { KiroSession, Pool } from "../pool/pool.ts";
 import { firstDiff, systemDiff, tracked } from "./diag.ts";
-import { fingerprint, hashSystem, type Msg, normalize } from "./messages.ts";
+import { fingerprint, hashSystem, lastUserText, type Msg, normalize } from "./messages.ts";
 import { type Plan, planRequest, type SessionView } from "./plan.ts";
 import { catchUpPrompt, deltaPrompt, retryPrompt, seedPrompt } from "./prompt.ts";
 import { classifyError, Turn, type TurnSink } from "./turn.ts";
@@ -51,6 +51,7 @@ export class Router {
     continuations: 0,
     deltas: 0,
     retries: 0,
+    abandoned: 0,
     catchUps: 0,
     resets: {} as Record<string, number>,
   };
@@ -103,6 +104,8 @@ export class Router {
     signal: AbortSignal,
     done: Promise<void>,
   ) {
+    // The client may have gone while this request waited on the per-session lock.
+    if (this.abandoned(signal, sink)) return;
     const conv = normalize(input.req);
     const fps = conv.messages.map(fingerprint);
     const sysHash = hashSystem(conv.system);
@@ -128,6 +131,7 @@ export class Router {
       live.history = fps;
       live.messages = conv.messages;
       live.lastUsed = Date.now();
+      if (this.abandoned(signal, sink)) return;
       this.watchAbort(live.turn, signal, done);
       live.turn.resume(sink, plan.results);
       return;
@@ -170,6 +174,8 @@ export class Router {
       blocks = seedPrompt(conv.system, conv.messages);
     }
     await this.configure(live, input.req);
+    // Disconnect during pool.take/configure: send nothing, keep the session state as it was.
+    if (this.abandoned(signal, sink)) return;
     live.history = fps;
     live.messages = conv.messages;
     live.system = conv.system;
@@ -227,6 +233,13 @@ export class Router {
     return acked;
   }
 
+  private abandoned(signal: AbortSignal, sink: TurnSink): boolean {
+    if (!signal.aborted) return false;
+    this.stats.abandoned++;
+    sink.fail({ kind: "cancelled", message: "client disconnected before the turn started" });
+    return true;
+  }
+
   private watchAbort(turn: Turn, signal: AbortSignal, done: Promise<void>): void {
     const onAbort = (): void => {
       if (turn.state === "running") turn.abort("client_disconnected");
@@ -240,6 +253,7 @@ export class Router {
       history: l.history,
       systemHash: l.systemHash,
       lastOutcome: l.lastOutcome,
+      lastUserText: lastUserText(l.messages),
       pendingToolIds: l.turn?.pendingToolIds,
     };
   }

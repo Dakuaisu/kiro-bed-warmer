@@ -89,6 +89,12 @@ export function fingerprint(m: Msg): string {
  * System-prompt fingerprint that ignores line order and skill `<location>` paths: opencode lists the same skills
  * from different synced dirs in varying order across processes, which is not a real instruction change.
  */
+/** Text of the final message when it is a user message (fingerprints ignore user text; edits need it). */
+export function lastUserText(messages: readonly Msg[]): string | undefined {
+  const last = messages.at(-1);
+  return last?.role === "user" ? last.text : undefined;
+}
+
 export const hashSystem = (system: string): string =>
   sha1(
     [...new Set(system.split("\n").map((l) => l.trim()))]

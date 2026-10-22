@@ -116,6 +116,25 @@ describe("planRequest", () => {
   });
 });
 
+describe("planRequest: edited last message", () => {
+  const known = [user("first question")];
+  const edited = [user("EDITED question")];
+  const v = (o: SessionView["lastOutcome"]) =>
+    view(known, { lastOutcome: o, lastUserText: "first question" });
+  it("after a completed turn -> reset", () => {
+    assert.deepEqual(planRequest(v("completed"), edited, fps(edited), SYS, "redeliver"), {
+      kind: "reset",
+      reason: "edited_last_message",
+    });
+  });
+  it("after an interrupted turn -> delta with the new text", () => {
+    assert.deepEqual(planRequest(v("interrupted"), edited, fps(edited), SYS, "redeliver"), {
+      kind: "delta",
+      messages: edited,
+    });
+  });
+});
+
 describe("fingerprints", () => {
   it("ignore plugin rewrites of earlier user text and pruned tool output", () => {
     assert.equal(fingerprint(user("a")), fingerprint(user("a\n[reminder injected later]")));

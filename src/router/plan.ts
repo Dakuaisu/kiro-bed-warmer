@@ -7,6 +7,8 @@ export type SessionView = {
   systemHash: string | undefined;
   /** Whether kiro produced the latest assistant output itself (vs. interrupted / answered elsewhere). */
   lastOutcome: "none" | "completed" | "interrupted" | "failed";
+  /** Text of the trailing user message kiro last received, to detect a revert + edit of that message. */
+  lastUserText?: string | undefined;
   /** Tool-call ids handed to opencode and still awaited, when a turn is suspended. */
   pendingToolIds: readonly string[] | undefined;
 };
@@ -78,6 +80,13 @@ export function planRequest(
     // after a cancel/stall only nudge; after a kiro error the prompt may not have been recorded, so resend it.
     const last = messages.at(-1);
     if (last?.role !== "user") return { kind: "catch_up", messages: [] };
+    if (view.lastUserText !== undefined && last.text !== view.lastUserText) {
+      // Revert + edit: kiro holds the old question (and, if it finished, its answer) - start clean.
+      // After an interrupted turn the old prompt is only a cancelled fragment, so send the new text.
+      return view.lastOutcome === "completed"
+        ? { kind: "reset", reason: "edited_last_message" }
+        : { kind: "delta", messages: [last] };
+    }
     return view.lastOutcome === "failed" ? { kind: "delta", messages: [last] } : { kind: "retry" };
   }
   const ours = view.lastOutcome === "completed" && suffix[0]?.role === "assistant";

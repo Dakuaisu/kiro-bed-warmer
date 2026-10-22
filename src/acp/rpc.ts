@@ -55,6 +55,7 @@ export class RpcPeer {
     const rl = createInterface({ input });
     rl.on("line", (line) => this.onLine(line));
     rl.on("close", () => this.close(new RpcClosedError("stream closed")));
+    rl.on("error", (err) => this.close(new RpcClosedError(`stream error: ${err.message}`)));
   }
 
   request(method: string, params: unknown, timeoutMs = 0): Promise<unknown> {

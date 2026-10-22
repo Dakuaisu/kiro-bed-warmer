@@ -43,6 +43,8 @@ export class KiroProcess {
   /** initialize succeeded; a process that dies before this never served sessions. */
   started = false;
   createdSessions = 0;
+  /** Slots claimed by in-flight session/new calls (see Pool.reserve). */
+  reserved = 0;
   liveSessions = new Set<string>();
   models: ModelInfo[] = [];
   readonly onExit = new Set<(proc: KiroProcess) => void>();

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { writeFileSync } from "node:fs";
-import { createServer } from "node:net";
+import { readdirSync, writeFileSync } from "node:fs";
+import { connect, createServer } from "node:net";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { KiroProcess } from "../../src/acp/process.ts";
@@ -9,6 +9,7 @@ import { ensureDaemon } from "../../src/client.ts";
 import { loadConfig } from "../../src/config.ts";
 import { createLogger } from "../../src/log.ts";
 import { Pool } from "../../src/pool/pool.ts";
+import { classifyError } from "../../src/router/turn.ts";
 import {
   acquireLock,
   ensureStateDirs,
@@ -31,7 +32,7 @@ import {
 const ALPHA = [
   { type: "function", function: { name: "alpha", parameters: { type: "object", properties: {} } } },
 ];
-const quietLog = createLogger(join("/private/tmp", "kbw-null.log"), false);
+const quietLog = createLogger("/dev/null", false);
 
 async function health(d: Daemon): Promise<{ activeTurns: number }> {
   const res = await fetch(`${d.base}/health`, { headers: { authorization: `Bearer ${d.token}` } });
@@ -49,7 +50,6 @@ describe("regressions (daemon, fake kiro-cli)", () => {
   });
   after(async () => {
     await d.stop();
-    removeDirs(["/private/tmp/kbw-null.log"]);
   });
 
   it("retry after a stall where kiro ignores session/cancel does not hang", async () => {
@@ -92,6 +92,84 @@ describe("regressions (daemon, fake kiro-cli)", () => {
     assert.equal((await health(d)).activeTurns, 0);
   });
 
+  it("a bridge socket error does not crash the daemon", async () => {
+    const sock = readdirSync(join(d.stateDir, "s")).find((f) => f.endsWith(".sock"));
+    assert.ok(sock, "expected a spare session bridge socket");
+    const c = connect(join(d.stateDir, "s", sock));
+    await new Promise<void>((r) => c.once("connect", () => r()));
+    for (let i = 0; i < 50; i++)
+      c.write(`${JSON.stringify({ jsonrpc: "2.0", id: i, method: "tools/list" })}\n`);
+    c.destroy();
+    await new Promise((r) => setTimeout(r, 1000));
+    assert.equal(
+      (await fetch(`${d.base}/health`, { headers: { authorization: `Bearer ${d.token}` } })).status,
+      200,
+    );
+  });
+
+  it("revert + edit of the last user message reaches kiro", async () => {
+    await chat(d, { messages: [{ role: "user", content: "first question" }] }, "b-edit");
+    const r = await chat(d, { messages: [{ role: "user", content: "EDITED question" }] }, "b-edit");
+    assert.equal(textOf(r.chunks), "fake: EDITED question");
+  });
+
+  it("a request aborted while queued behind another sends no prompt", async () => {
+    const prompts = (): number =>
+      d.logLines().filter((l) => l.event === "acp.rpc" && l.dir === "out" && l.method === "session/prompt")
+        .length;
+    const before = prompts();
+    const first = [{ role: "user", content: "SLOWSTART" }];
+    const slow = chat(d, { messages: first }, "b-queue");
+    await new Promise((r) => setTimeout(r, 100));
+    const ac = new AbortController();
+    const queued = chat(
+      d,
+      { messages: [...first, { role: "user", content: "queued" }] },
+      "b-queue",
+      ac.signal,
+    ).catch(() => undefined);
+    setTimeout(() => ac.abort(), 200);
+    await slow;
+    await queued;
+    const t0 = Date.now();
+    const third = [
+      ...first,
+      { role: "assistant", content: "fake: SLOWSTART" },
+      { role: "user", content: "third" },
+    ];
+    assert.equal(textOf((await chat(d, { messages: third }, "b-queue")).chunks), "fake: third");
+    assert.ok(Date.now() - t0 < 1000, `third request waited ${Date.now() - t0} ms`);
+    assert.equal(prompts() - before, 2);
+  });
+
+  it("kiro answering after giving up on a handed-off tool call is not lost", async () => {
+    const msgs = [{ role: "user", content: "TOOLGIVEUP" }];
+    const r1 = await chat(d, { messages: msgs, tools: ALPHA }, "b-giveup");
+    const [call] = toolCallsOf(r1.chunks);
+    assert.ok(call);
+    await new Promise((r) => setTimeout(r, 1000));
+    const cont = [
+      ...msgs,
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: call.id, type: "function", function: call.function }],
+      },
+      { role: "tool", tool_call_id: call.id, content: "late result" },
+    ];
+    const r2 = await chat(d, { messages: cont, tools: ALPHA }, "b-giveup");
+    assert.equal(textOf(r2.chunks), "GAVE-UP-ANSWER");
+  });
+
+  it("/v1/warm with a malformed body is a 400", async () => {
+    const res = await fetch(`${d.base}/v1/warm`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${d.token}` },
+      body: "{not json",
+    });
+    assert.equal(res.status, 400);
+  });
+
   it("identical retry after a stalled turn does not re-send the user message", async () => {
     const msgs = [{ role: "user", content: "hello HICCUP" }];
     assert.equal((await chat(d, { messages: msgs }, "b-dup")).status, 503);
@@ -130,6 +208,41 @@ describe("regressions (components)", () => {
     }
     assert.equal(pool.processCount(), 1);
     await pool.close();
+  });
+
+  it("concurrent takes respect maxSessionsPerProcess", async () => {
+    const cfg = cfgFor({ KBW_MAX_SESSIONS_PER_PROCESS: "2" });
+    const pool = new Pool(cfg, quietLog);
+    const sessions = await Promise.all(
+      Array.from({ length: 6 }, (_, i) => pool.take(join(cfg.stateDir, `c${i % 3}`))),
+    );
+    const perProc = new Map<unknown, number>();
+    for (const s of sessions) perProc.set(s.proc, (perProc.get(s.proc) ?? 0) + 1);
+    assert.ok(
+      [...perProc.values()].every((n) => n <= 2),
+      JSON.stringify([...perProc.values()]),
+    );
+    for (const s of sessions) pool.release(s);
+    await pool.close();
+  });
+
+  it("only auth-like errors are classified as auth", () => {
+    for (const m of [
+      "Not logged in. Run kiro-cli login",
+      "Unauthorized",
+      "token expired",
+      "Please sign in again",
+    ]) {
+      assert.equal(classifyError(new Error(m), true).kind, "auth", m);
+    }
+    for (const m of [
+      "ThrottlingException: assigning capacity",
+      "designing the response",
+      "Request expired",
+      "x",
+    ]) {
+      assert.equal(classifyError(new Error(m), true).kind, "kiro", m);
+    }
   });
 
   it("stopping a kiro-cli that ignores SIGTERM still completes", { timeout: 20_000 }, async () => {

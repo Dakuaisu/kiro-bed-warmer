@@ -27,7 +27,7 @@ export class Pool {
 
   /** Start the first process and a spare session in the daemon's neutral cwd. */
   async warmUp(cwds: string[]): Promise<void> {
-    await this.process();
+    (await this.reserve()).reserved--;
     await Promise.all(cwds.map((cwd) => this.ensureSpare(cwd)));
   }
 
@@ -72,7 +72,9 @@ export class Pool {
         if (this.closed || !this.recentCwds.includes(cwd)) return this.release(s);
         this.spares.set(cwd, s);
       })
-      .catch((err: unknown) => this.log.warn("pool.spare_failed", { cwd, err: errorMessage(err) }))
+      .catch((err: unknown) => {
+        if (!this.closed) this.log.warn("pool.spare_failed", { cwd, err: errorMessage(err) });
+      })
       .finally(() => this.refilling.delete(cwd));
     this.refilling.set(cwd, job);
     return job;
@@ -87,6 +89,8 @@ export class Pool {
 
   async close(): Promise<number[]> {
     this.closed = true;
+    // A refill may be mid-spawn; let it land in `procs` so it is stopped below instead of leaking.
+    await this.starting?.catch(() => undefined);
     for (const s of this.spares.values()) s.bridge.close();
     this.spares.clear();
     return Promise.all(this.procs.map((p) => p.stop()));
@@ -106,35 +110,53 @@ export class Pool {
   }
 
   private async create(cwd: string): Promise<KiroSession> {
-    const proc = await this.process();
+    const proc = await this.reserve();
     const bridge = new Bridge(this.cfg.socketDir, this.log);
-    await bridge.listen();
     try {
+      await bridge.listen();
       const acpId = await proc.newSession(cwd, [bridge.spec()]);
+      if (this.closed) {
+        proc.drop(acpId);
+        throw new Error("pool is closed");
+      }
       return { proc, acpId, bridge, cwd };
     } catch (err) {
       bridge.close();
       throw err;
+    } finally {
+      proc.reserved--;
     }
   }
 
-  /** Least-loaded live process with capacity, spawning one when none has room. */
-  private async process(): Promise<KiroProcess> {
-    const usable = this.procs
-      .filter(
-        (p) =>
-          p.isAlive &&
-          p.liveSessions.size < this.cfg.maxSessionsPerProcess &&
-          p.createdSessions < this.cfg.maxCreatedPerProcess,
-      )
-      .sort((a, b) => a.liveSessions.size - b.liveSessions.size);
-    const best = usable[0];
-    if (best) return best;
-    if (this.starting) return this.starting;
-    this.starting = this.spawn().finally(() => {
-      this.starting = undefined;
-    });
-    return this.starting;
+  /**
+   * Least-loaded initialized process with capacity, reserving a slot synchronously so concurrent callers
+   * can't overshoot the per-process limits. Spawns a process when none has room. Caller must call
+   * `unreserve()` once its session/new settles.
+   */
+  private async reserve(): Promise<KiroProcess> {
+    for (;;) {
+      if (this.closed) throw new Error("pool is closed");
+      const load = (p: KiroProcess): number => p.liveSessions.size + p.reserved;
+      const best = this.procs
+        .filter(
+          (p) =>
+            p.isAlive &&
+            p.started &&
+            load(p) < this.cfg.maxSessionsPerProcess &&
+            p.createdSessions + p.reserved < this.cfg.maxCreatedPerProcess,
+        )
+        .sort((a, b) => load(a) - load(b))[0];
+      if (best) {
+        best.reserved++;
+        return best;
+      }
+      if (!this.starting) {
+        this.starting = this.spawn().finally(() => {
+          this.starting = undefined;
+        });
+      }
+      await this.starting;
+    }
   }
 
   private async spawn(): Promise<KiroProcess> {

@@ -32,7 +32,7 @@ export type TurnDeps = {
 };
 
 const AUTH_PATTERN =
-  /not logged in|kiro-cli login|unauthori[sz]ed|expired|invalid (?:token|credentials)|sign[- ]?in/i;
+  /not logged in|kiro-cli login|unauthori[sz]ed|\b(?:token|session|credentials?|login)s? (?:has |have |is |are )?expired|invalid (?:access |bearer )?(?:token|credentials)|\bsign[- ]in\b/i;
 
 export function classifyError(err: unknown, procAlive: boolean): TurnError {
   const message = errorMessage(err);
@@ -64,6 +64,8 @@ export class Turn {
   private toolTimer: NodeJS.Timeout | undefined;
   private metadata: Metadata | undefined;
   private aborted = false;
+  /** Tool-call ids handed to opencode in the last tool_calls response, until its results arrive. */
+  private handedOff: string[] | undefined;
   private readonly started = Date.now();
 
   private readonly proc: KiroProcess;
@@ -94,13 +96,14 @@ export class Turn {
   }
 
   get pendingToolIds(): string[] | undefined {
-    return this.state === "awaiting_tools" ? [...this.awaiting.keys()] : undefined;
+    return this.handedOff;
   }
 
   /** Attach the next HTTP response and hand kiro the tool results. */
   resume(sink: TurnSink, results: ReadonlyMap<string, string>): void {
     this.sink = sink;
-    this.state = "running";
+    this.handedOff = undefined;
+    if (this.state !== "done") this.state = "running";
     clearTimeout(this.toolTimer);
     for (const [id, call] of this.awaiting) {
       const text = results.get(id);
@@ -111,6 +114,7 @@ export class Turn {
       );
     }
     this.awaiting.clear();
+    // kiro may have answered on its own meanwhile (it gave up on the tool call); replay that output now.
     for (const write of this.buffered.splice(0)) write(sink);
     this.armStall();
     if (this.batch.length > 0) this.scheduleFlush();
@@ -187,6 +191,7 @@ export class Turn {
     if (!sink || this.batch.length === 0) return;
     const calls = this.batch.splice(0);
     for (const c of calls) this.awaiting.set(c.id, c);
+    this.handedOff = calls.map((c) => c.id);
     this.state = "awaiting_tools";
     this.sink = undefined;
     sink.toolCalls(calls.map(({ id, name, args }) => ({ id, name, args })));
@@ -210,11 +215,12 @@ export class Turn {
     this.finalize();
     if (this.aborted) return;
     if (stop === "cancelled") {
-      this.sink?.fail({ kind: "cancelled", message: "Kiro cancelled the turn" });
+      this.out((s) => s.fail({ kind: "cancelled", message: "Kiro cancelled the turn" }));
       return;
     }
     this.outcome = "completed";
-    this.sink?.finish(mapStop(stop), this.info());
+    const info = this.info();
+    this.out((s) => s.finish(mapStop(stop), info));
   }
 
   private onError(err: unknown): void {
@@ -223,7 +229,7 @@ export class Turn {
     this.outcome = "failed";
     const e = classifyError(err, this.proc.isAlive);
     this.log.warn("turn.error", { acpId: this.acpId, kind: e.kind, err: e.message });
-    this.sink?.fail(e);
+    this.out((s) => s.fail(e));
   }
 
   private finalize(): void {

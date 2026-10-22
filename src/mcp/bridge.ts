@@ -106,9 +106,12 @@ export class Bridge {
   private accept(sock: Socket): void {
     this.conn?.destroy();
     this.conn = sock;
-    createInterface({ input: sock }).on("line", (line) => {
+    const rl = createInterface({ input: sock });
+    rl.on("line", (line) => {
       void this.onLine(line);
     });
+    // readline re-emits socket errors (EPIPE/ECONNRESET when nc or kiro-cli exits); unhandled, they kill the daemon.
+    rl.on("error", (err) => this.log.debug("bridge.readline_error", { bridge: this.id, err: err.message }));
     sock.on("error", (err) => this.log.debug("bridge.socket_error", { bridge: this.id, err: err.message }));
     sock.on("close", () => {
       if (this.conn === sock) this.conn = undefined;
@@ -116,7 +119,8 @@ export class Bridge {
   }
 
   private send(msg: object): void {
-    this.conn?.write(`${JSON.stringify(msg)}\n`);
+    const c = this.conn;
+    if (c && !c.destroyed && c.writable) c.write(`${JSON.stringify(msg)}\n`);
   }
 
   private async onLine(line: string): Promise<void> {

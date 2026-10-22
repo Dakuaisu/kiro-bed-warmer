@@ -3,7 +3,7 @@
 //   contains "PARTIAL"   -> one text chunk, then silence until session/cancel
 //   contains "STALL"     -> never answers until session/cancel
 //   contains "AUTHFAIL"  -> JSON-RPC error like a logged-out kiro-cli
-//   contains "SLOWSTART" -> waits FAKE_SLOW_MS before the first chunk
+//   last line "SLOWSTART" -> thought chunks for FAKE_SLOW_MS, then the answer
 //   contains "CALLTOOLS:a,b" -> calls those MCP tools in parallel via the session's MCP server, echoes results
 //   last line has "WEDGE" -> never answers, ignores session/cancel too
 //   contains "HICCUP"    -> first prompt on the session stalls until cancel, later ones answer
@@ -11,6 +11,7 @@
 //   contains "PCT:<n>"   -> session context usage becomes n% (reported in metadata)
 //   contains "ECHOSYS"   -> replies "sys=yes|no" (whether <system_instructions> was in the prompt)
 //   contains "RETRYTOOL:<name>" -> calls the tool, calls it again if the result is an error, then answers
+//   contains "TOOLGIVEUP" -> calls alpha, cancels that MCP call after 500 ms, answers GAVE-UP-ANSWER
 //   otherwise            -> streams "fake: <last line>" and ends the turn
 // Env: FAKE_INIT_EXIT=1 exits on initialize; FAKE_IGNORE_TERM=1 ignores SIGTERM and stdin EOF;
 //      FAKE_IGNORE_LIST_CHANGED=1 never re-lists tools.
@@ -89,6 +90,19 @@ async function prompt(id: unknown, p: Json): Promise<void> {
     }
     out({ method: "_kiro.dev/compaction/status", params: { sessionId: sid, status: { type: "completed" } } });
   }
+  if (text.includes("TOOLGIVEUP")) {
+    const mcp = s.mcp;
+    const callId = `call-${++callSeq}`;
+    mcp?.stdin?.write(
+      `${JSON.stringify({ jsonrpc: "2.0", id: callId, method: "tools/call", params: { name: "alpha", arguments: {} } })}\n`,
+    );
+    await new Promise((r) => setTimeout(r, 500));
+    mcp?.stdin?.write(
+      `${JSON.stringify({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: callId } })}\n`,
+    );
+    update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "GAVE-UP-ANSWER" } });
+    return out({ id, result: { stopReason: "end_turn" } });
+  }
   const retryTool = /RETRYTOOL:(\w+)/.exec(text)?.[1];
   if (retryTool) {
     let res = await mcpCall(sid, retryTool);
@@ -111,8 +125,13 @@ async function prompt(id: unknown, p: Json): Promise<void> {
     await cancelled;
     return out({ id, result: { stopReason: "cancelled" } });
   }
-  if (text.includes("SLOWSTART"))
-    await new Promise((r) => setTimeout(r, Number(process.env.FAKE_SLOW_MS ?? 2000)));
+  if (last.includes("SLOWSTART")) {
+    const until = Date.now() + Number(process.env.FAKE_SLOW_MS ?? 2000);
+    while (Date.now() < until) {
+      update(sid, { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "." } });
+      await new Promise((r) => setTimeout(r, 300));
+    }
+  }
   const tools = /CALLTOOLS:([\w,]+)/.exec(text)?.[1]?.split(",");
   if (tools) {
     update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "calling " } });

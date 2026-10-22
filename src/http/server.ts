@@ -132,7 +132,13 @@ async function route(d: HttpDeps, req: IncomingMessage, res: ServerResponse): Pr
   } else if (req.method === "POST" && url === "/v1/chat/completions") {
     await chat(d, req, res);
   } else if (req.method === "POST" && url === "/v1/warm") {
-    const w = WarmRequest.safeParse(JSON.parse((await readBody(req)) || "{}"));
+    let body: unknown;
+    try {
+      body = JSON.parse((await readBody(req)) || "{}");
+    } catch {
+      body = undefined;
+    }
+    const w = WarmRequest.safeParse(body);
     if (!w.success || !isDir(w.data.cwd)) {
       fail(res, 400, "body must be {cwd: <absolute directory>}", "invalid_request");
       return;

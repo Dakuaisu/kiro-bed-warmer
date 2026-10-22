@@ -55,8 +55,13 @@ export const KiroWarmPlugin: Plugin = async ({ directory }) => {
     },
     "chat.headers": async (input, output) => {
       if (input.model.providerID !== PROVIDER_ID) return;
-      await ensure().catch((err: unknown) => console.warn(`[kiro-warm] ${errorMessage(err)}`));
+      const t = await ensure().catch((err: unknown) => {
+        console.warn(`[kiro-warm] ${errorMessage(err)}`);
+        return undefined;
+      });
       output.headers["x-kbw-cwd"] = directory;
+      // The config hook may have run while the daemon was down; send the token on every request.
+      if (t) output.headers.Authorization = `Bearer ${t}`;
     },
   };
 };

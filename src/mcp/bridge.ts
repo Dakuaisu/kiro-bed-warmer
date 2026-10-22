@@ -95,6 +95,11 @@ export class Bridge {
     return true;
   }
 
+  /** Ask kiro to re-list the current tools (no-op until kiro has connected). */
+  relist(): void {
+    this.send({ jsonrpc: "2.0", method: "notifications/tools/list_changed", params: {} });
+  }
+
   close(): void {
     for (const ac of this.inflight.values()) ac.abort();
     this.inflight.clear();

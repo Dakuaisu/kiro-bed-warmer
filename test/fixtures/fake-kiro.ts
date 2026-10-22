@@ -10,11 +10,13 @@
 //   contains "COMPACTSLOW" -> compaction progress notices for FAKE_COMPACT_MS, then answers
 //   contains "PCT:<n>"   -> session context usage becomes n% (reported in metadata)
 //   contains "ECHOSYS"   -> replies "sys=yes|no" (whether <system_instructions> was in the prompt)
+//   contains "ECHOTOOLS" -> replies "tools=<n>": bridge tools kiro had registered when the prompt arrived
 //   contains "RETRYTOOL:<name>" -> calls the tool, calls it again if the result is an error, then answers
 //   contains "TOOLGIVEUP" -> calls alpha, cancels that MCP call after 500 ms, answers GAVE-UP-ANSWER
 //   otherwise            -> streams "fake: <last line>" and ends the turn
 // Env: FAKE_INIT_EXIT=1 exits on initialize; FAKE_IGNORE_TERM=1 ignores SIGTERM and stdin EOF;
-//      FAKE_IGNORE_LIST_CHANGED=1 never re-lists tools.
+//      FAKE_IGNORE_LIST_CHANGED=1 never re-lists tools (FAKE_IGNORE_FIRST_LIST_CHANGED=1: skips only the first); FAKE_REGISTER_DELAY_MS delays registering
+//      listed tools (reported via _kiro.dev/commands/available); FAKE_NEVER_REGISTER=1 never registers.
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 
@@ -22,7 +24,14 @@ type Json = Record<string, unknown>;
 const out = (m: Json): void => {
   process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...m })}\n`);
 };
-type Sess = { mcp?: ReturnType<typeof spawn>; cancel?: () => void; pct?: number; stalledOnce?: boolean };
+type Sess = {
+  registered?: number;
+  skippedChange?: boolean;
+  mcp?: ReturnType<typeof spawn>;
+  cancel?: () => void;
+  pct?: number;
+  stalledOnce?: boolean;
+};
 const sessions = new Map<string, Sess>();
 if (process.env.FAKE_IGNORE_TERM) {
   process.on("SIGTERM", () => undefined);
@@ -145,7 +154,9 @@ async function prompt(id: unknown, p: Json): Promise<void> {
   update(sid, { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "thinking" } });
   const reply = text.includes("ECHOSYS")
     ? `sys=${text.includes("<system_instructions>") ? "yes" : "no"}`
-    : `fake: ${last}`;
+    : text.includes("ECHOTOOLS")
+      ? `tools=${s.registered ?? 0}`
+      : `fake: ${last}`;
   update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: reply } });
   out({
     method: "_kiro.dev/metadata",
@@ -167,13 +178,33 @@ function newSession(id: unknown, p: Json): void {
     mcp.stdin?.write(
       `${JSON.stringify({ jsonrpc: "2.0", id: "init", method: "initialize", params: { protocolVersion: "2025-11-25" } })}\n`,
     );
+    const list = (): void => {
+      mcp.stdin?.write(
+        `${JSON.stringify({ jsonrpc: "2.0", id: `list-${++callSeq}`, method: "tools/list", params: {} })}\n`,
+      );
+    };
+    list();
     createInterface({ input: mcp.stdout as NodeJS.ReadableStream }).on("line", (l) => {
-      if (
-        !process.env.FAKE_IGNORE_LIST_CHANGED &&
-        (JSON.parse(l) as Json).method === "notifications/tools/list_changed"
-      ) {
-        mcp.stdin?.write(
-          `${JSON.stringify({ jsonrpc: "2.0", id: `list-${++callSeq}`, method: "tools/list", params: {} })}\n`,
+      const m = JSON.parse(l) as Json;
+      if (!process.env.FAKE_IGNORE_LIST_CHANGED && m.method === "notifications/tools/list_changed") {
+        if (process.env.FAKE_IGNORE_FIRST_LIST_CHANGED && !s.skippedChange) s.skippedChange = true;
+        else list();
+      }
+      const listed = (m.result as Json | undefined)?.tools;
+      if (String(m.id).startsWith("list-") && Array.isArray(listed) && !process.env.FAKE_NEVER_REGISTER) {
+        setTimeout(
+          () => {
+            s.registered = listed.length;
+            out({
+              method: "_kiro.dev/commands/available",
+              params: {
+                sessionId: sid,
+                tools: [],
+                mcpServers: [{ name: "oc", status: "running", toolCount: listed.length }],
+              },
+            });
+          },
+          Number(process.env.FAKE_REGISTER_DELAY_MS ?? 0),
         );
       }
     });

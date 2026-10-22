@@ -11,7 +11,7 @@ so Kiro models start fast and stalls fall back to another model instead of hangi
 [![OpenCode](https://img.shields.io/badge/opencode-1.18.x-111111)](https://opencode.ai)
 [![Platform](https://img.shields.io/badge/platform-macOS-000000?logo=apple&logoColor=white)](#requirements)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](#development)
-[![Tests](https://img.shields.io/badge/tests-49%20unit%20%2B%202%20integration-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-52%20unit%20%2B%202%20integration-brightgreen)](#development)
 
 [Quick start](#quick-start) · [Benchmarks](#benchmarks) · [Configuration](#configuration) · [How it works](#how-it-works) · [Security](#security) · [Troubleshooting](#troubleshooting)
 
@@ -197,6 +197,7 @@ All settings are environment variables:
 | `KBW_MAX_SESSIONS_PER_PROCESS` | `24` | Sessions per `kiro-cli` before another process is spawned |
 | `KBW_SPARE_CWDS` | `4` | Directories that get a pre-warmed spare session |
 | `KBW_TOOL_BATCH_MS` | `100` | Window for batching parallel tool calls into one step |
+| `KBW_TOOLS_READY_SECONDS` | `10` | Wait for kiro to register a request's tools before prompting (twice, with a re-list nudge); then a retryable `503` |
 | `KBW_ENGINE` | `v2` | `v2` or `v3` ACP engine (v3 was slower in testing) |
 | `KBW_ON_SYSTEM_CHANGE` | `redeliver` | `redeliver` or `reset` when the system prompt changes |
 | `KBW_DEBUG` | — | `1` logs every ACP method with timings |
@@ -286,7 +287,7 @@ Every route needs `Authorization: Bearer <token>`.
 ## Development
 
 ```sh
-npm run check              # tsc (strict) + biome + 49 unit tests against a fake kiro-cli
+npm run check              # tsc (strict) + biome + 52 unit tests against a fake kiro-cli
 npm run test:integration   # 2 tests against real kiro-cli on claude-haiku-4.5
 ```
 

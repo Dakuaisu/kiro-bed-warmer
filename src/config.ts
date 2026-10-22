@@ -15,6 +15,7 @@ const EnvSchema = z.object({
   KBW_MAX_CREATED_PER_PROCESS: intFrom(150),
   KBW_SPARE_CWDS: intFrom(4),
   KBW_TOOL_BATCH_MS: intFrom(100),
+  KBW_TOOLS_READY_SECONDS: z.coerce.number().positive().default(10),
   KBW_ENGINE: z.enum(["v2", "v3"]).default("v2"),
   KBW_KIRO_BIN: z.string().min(1).default("kiro-cli"),
   KBW_ON_SYSTEM_CHANGE: z.enum(["reset", "redeliver"]).default("redeliver"),
@@ -37,6 +38,7 @@ export type Config = {
   readonly maxCreatedPerProcess: number;
   readonly spareCwds: number;
   readonly toolBatchMs: number;
+  readonly toolsReadyMs: number;
   readonly engine: "v2" | "v3";
   readonly kiroBin: string;
   readonly onSystemChange: "reset" | "redeliver";
@@ -64,6 +66,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
     maxCreatedPerProcess: e.KBW_MAX_CREATED_PER_PROCESS,
     spareCwds: e.KBW_SPARE_CWDS,
     toolBatchMs: e.KBW_TOOL_BATCH_MS,
+    toolsReadyMs: e.KBW_TOOLS_READY_SECONDS * 1000,
     engine: e.KBW_ENGINE,
     kiroBin: e.KBW_KIRO_BIN,
     onSystemChange: e.KBW_ON_SYSTEM_CHANGE,

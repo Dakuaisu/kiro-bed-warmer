@@ -8,6 +8,7 @@ export function errorStatus(kind: TurnError["kind"]): number {
       return 401;
     case "stall":
     case "crash":
+    case "tools":
       return 503;
     case "cancelled":
     case "kiro":

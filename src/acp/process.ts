@@ -5,6 +5,7 @@ import { AGENT_NAME, BRIDGE_SERVER_NAME } from "../state.ts";
 import { RpcPeer } from "./rpc.ts";
 import {
   CommandResult,
+  CommandsAvailable,
   CompactionStatus,
   InitializeResult,
   MetadataNotification,
@@ -17,6 +18,7 @@ import {
   SessionUpdate,
   SessionUpdateNotification,
 } from "./schema.ts";
+import { ToolReports } from "./tool-reports.ts";
 
 export type McpServerSpec = {
   name: string;
@@ -47,6 +49,7 @@ export class KiroProcess {
   reserved = 0;
   liveSessions = new Set<string>();
   models: ModelInfo[] = [];
+  readonly toolReports = new ToolReports();
   readonly onExit = new Set<(proc: KiroProcess) => void>();
 
   private readonly cfg: Config;
@@ -145,6 +148,7 @@ export class KiroProcess {
   drop(sessionId: string): void {
     this.listeners.delete(sessionId);
     this.liveSessions.delete(sessionId);
+    this.toolReports.forget(sessionId);
   }
 
   stderr(): string {
@@ -223,6 +227,14 @@ export class KiroProcess {
         this.emit(c.data.sessionId, type === "completed" ? { kind: "compacted" } : { kind: "other", method });
       }
       return;
+    }
+    if (method === "_kiro.dev/commands/available") {
+      const c = CommandsAvailable.safeParse(params);
+      if (c.success) {
+        const server = c.data.mcpServers?.find((m) => m.name === BRIDGE_SERVER_NAME);
+        const fromList = (c.data.tools ?? []).filter((t) => t.source === `mcp:${BRIDGE_SERVER_NAME}`).length;
+        this.toolReports.record(c.data.sessionId, server?.toolCount ?? fromList);
+      }
     }
     const other = SessionScoped.safeParse(params);
     if (other.success) this.emit(other.data.sessionId, { kind: "other", method });

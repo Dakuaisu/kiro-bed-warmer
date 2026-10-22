@@ -74,6 +74,17 @@ export const CompactionStatus = z
   })
   .passthrough();
 
+/** kiro's view of a session's tools; sent after session/new and after every MCP re-list. */
+export const CommandsAvailable = z
+  .object({
+    sessionId: z.string(),
+    mcpServers: z
+      .array(z.object({ name: z.string(), toolCount: z.number().optional() }).passthrough())
+      .optional(),
+    tools: z.array(z.object({ source: z.string().optional() }).passthrough()).optional(),
+  })
+  .passthrough();
+
 export const PermissionRequest = z.object({
   sessionId: z.string(),
   toolCall: z

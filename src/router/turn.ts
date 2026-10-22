@@ -4,10 +4,14 @@ import { RpcClosedError } from "../acp/rpc.ts";
 import type { Metadata, SessionEvent } from "../acp/schema.ts";
 import { errorMessage, type Logger } from "../log.ts";
 import type { Bridge, ToolCallRequest, ToolCallResult } from "../mcp/bridge.ts";
+import { ToolsNotReadyError } from "./tools-ready.ts";
 
 export type EmittedCall = { id: string; name: string; args: string };
 export type FinishReason = "stop" | "length" | "tool_calls" | "content_filter";
-export type TurnError = { kind: "stall" | "auth" | "crash" | "cancelled" | "kiro"; message: string };
+export type TurnError = {
+  kind: "stall" | "auth" | "crash" | "cancelled" | "kiro" | "tools";
+  message: string;
+};
 export type TurnInfo = { metadata: Metadata | undefined; wallMs: number };
 
 /** Where a turn's output goes; one sink per HTTP response. */
@@ -36,6 +40,7 @@ const AUTH_PATTERN =
 
 export function classifyError(err: unknown, procAlive: boolean): TurnError {
   const message = errorMessage(err);
+  if (err instanceof ToolsNotReadyError) return { kind: "tools", message };
   if (AUTH_PATTERN.test(message)) {
     return { kind: "auth", message: `Kiro authentication failed; run \`kiro-cli login\`. (${message})` };
   }

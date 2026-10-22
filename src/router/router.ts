@@ -8,6 +8,7 @@ import { firstDiff, systemDiff, tracked } from "./diag.ts";
 import { fingerprint, hashSystem, lastUserText, type Msg, normalize } from "./messages.ts";
 import { type Plan, planRequest, type SessionView } from "./plan.ts";
 import { catchUpPrompt, deltaPrompt, retryPrompt, seedPrompt } from "./prompt.ts";
+import { installTools, ToolsNotReadyError } from "./tools-ready.ts";
 import { classifyError, Turn, type TurnSink } from "./turn.ts";
 
 const INSTRUCTION_HIGH_WATER_PCT = 70;
@@ -281,8 +282,15 @@ export class Router {
   }
 
   private async configure(live: Live, req: ChatRequest): Promise<void> {
-    const { proc, acpId, bridge } = live.s;
-    const tasks: Promise<unknown>[] = [bridge.setTools(toMcpTools(req))];
+    const { proc, acpId } = live.s;
+    const tools = installTools(live.s, toMcpTools(req), this.cfg.toolsReadyMs, this.log).catch(
+      (err: unknown) => {
+        // A session kiro won't give tools to is useless; the retry must start on a fresh one.
+        if (err instanceof ToolsNotReadyError) this.drop(live.key);
+        throw err;
+      },
+    );
+    const tasks: Promise<unknown>[] = [tools];
     if (live.model !== req.model) {
       tasks.push(proc.setModel(acpId, req.model).then(() => (live.model = req.model)));
     }

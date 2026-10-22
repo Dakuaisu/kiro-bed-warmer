@@ -7,6 +7,7 @@ import { after, before, describe, it } from "node:test";
 import { KiroProcess } from "../../src/acp/process.ts";
 import { ensureDaemon } from "../../src/client.ts";
 import { loadConfig } from "../../src/config.ts";
+import { estimateUsage } from "../../src/http/sse.ts";
 import { createLogger } from "../../src/log.ts";
 import { Pool } from "../../src/pool/pool.ts";
 import { classifyError } from "../../src/router/turn.ts";
@@ -170,6 +171,20 @@ describe("regressions (daemon, fake kiro-cli)", () => {
     assert.equal(res.status, 400);
   });
 
+  it("the final chunk reports usage derived from kiro's context % and the window size", async () => {
+    const r = await chat(d, { messages: [{ role: "user", content: "PCT:40" }] }, "b-usage", undefined, {
+      "x-kbw-context-limit": "100000",
+    });
+    const last = r.raw
+      .split("\n")
+      .filter((l) => l.startsWith("data: {"))
+      .map((l) => JSON.parse(l.slice(6)) as { usage?: Record<string, number> })
+      .at(-1);
+    assert.equal(last?.usage?.total_tokens, 40_000);
+    assert.ok((last?.usage?.completion_tokens ?? 0) > 0);
+    assert.equal((last?.usage?.prompt_tokens ?? 0) + (last?.usage?.completion_tokens ?? 0), 40_000);
+  });
+
   it("identical retry after a stalled turn does not re-send the user message", async () => {
     const msgs = [{ role: "user", content: "hello HICCUP" }];
     assert.equal((await chat(d, { messages: msgs }, "b-dup")).status, 503);
@@ -224,6 +239,16 @@ describe("regressions (components)", () => {
     );
     for (const s of sessions) pool.release(s);
     await pool.close();
+  });
+
+  it("usage is omitted without a context %, and output never exceeds the total", () => {
+    assert.equal(estimateUsage({ metadata: undefined, wallMs: 1 }, 200_000, 100), undefined);
+    const tiny = estimateUsage(
+      { metadata: { sessionId: "s", contextUsagePercentage: 0.001 }, wallMs: 1 },
+      200_000,
+      4000,
+    );
+    assert.deepEqual(tiny, { prompt_tokens: 0, completion_tokens: 2, total_tokens: 2 });
   });
 
   it("only auth-like errors are classified as auth", () => {

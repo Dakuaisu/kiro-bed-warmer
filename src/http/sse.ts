@@ -33,6 +33,23 @@ function kiroUsage(info: TurnInfo): Record<string, unknown> {
 }
 
 /**
+ * kiro reports no token counts, only context usage %. Derive OpenAI usage from it so opencode's context
+ * meter matches kiro's: the total equals pct x the model's context window, and the output share is
+ * estimated from the streamed characters (~4 per token). Omitted when kiro sent no context %.
+ */
+export function estimateUsage(
+  info: TurnInfo,
+  contextLimit: number,
+  outputChars: number,
+): Record<string, number> | undefined {
+  const pct = info.metadata?.contextUsagePercentage;
+  if (pct === undefined) return undefined;
+  const total = Math.round((pct / 100) * contextLimit);
+  const completion = Math.min(total, Math.ceil(outputChars / 4));
+  return { prompt_tokens: total - completion, completion_tokens: completion, total_tokens: total };
+}
+
+/**
  * OpenAI chat.completions writer. Headers are deferred until the first output so that an early failure
  * (stall before the first token, auth, crash) can still be reported with a real HTTP status.
  */
@@ -45,15 +62,19 @@ export class CompletionSink implements TurnSink {
   private text_ = "";
   private reasoning_ = "";
   private readonly calls: EmittedCall[] = [];
+  private outputChars = 0;
 
   private readonly res: ServerResponse;
   private readonly model: string;
   private readonly stream: boolean;
 
-  constructor(res: ServerResponse, model: string, stream: boolean) {
+  private readonly contextLimit: number;
+
+  constructor(res: ServerResponse, model: string, stream: boolean, contextLimit: number) {
     this.res = res;
     this.model = model;
     this.stream = stream;
+    this.contextLimit = contextLimit;
   }
 
   get isEnded(): boolean {
@@ -61,16 +82,19 @@ export class CompletionSink implements TurnSink {
   }
 
   text(delta: string): void {
+    this.outputChars += delta.length;
     if (!this.stream) this.text_ += delta;
     else this.chunk({ content: delta });
   }
 
   reasoning(delta: string): void {
+    this.outputChars += delta.length;
     if (!this.stream) this.reasoning_ += delta;
     else this.chunk({ reasoning_content: delta });
   }
 
   toolCalls(calls: EmittedCall[]): void {
+    for (const c of calls) this.outputChars += c.name.length + c.args.length;
     if (!this.stream) {
       this.calls.push(...calls);
       return;
@@ -87,6 +111,8 @@ export class CompletionSink implements TurnSink {
 
   finish(reason: FinishReason, info: TurnInfo): void {
     if (this.ended) return;
+    const usage = estimateUsage(info, this.contextLimit, this.outputChars);
+    const extra = { ...(usage ? { usage } : {}), kiro: kiroUsage(info) };
     if (!this.stream) {
       const message = {
         role: "assistant",
@@ -106,10 +132,10 @@ export class CompletionSink implements TurnSink {
         ...this.base("chat.completion"),
         choices: [{ index: 0, message, finish_reason: reason }],
       };
-      this.json(200, JSON.stringify({ ...body, kiro: kiroUsage(info) }));
+      this.json(200, JSON.stringify({ ...body, ...extra }));
       return;
     }
-    this.chunk({}, reason, { kiro: kiroUsage(info) });
+    this.chunk({}, reason, extra);
     this.res.end("data: [DONE]\n\n");
     this.ended = true;
   }

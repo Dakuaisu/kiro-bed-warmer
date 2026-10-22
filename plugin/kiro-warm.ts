@@ -60,6 +60,8 @@ export const KiroWarmPlugin: Plugin = async ({ directory }) => {
         return undefined;
       });
       output.headers["x-kbw-cwd"] = directory;
+      // Lets the daemon turn kiro's context % into token counts opencode measures against this limit.
+      output.headers["x-kbw-context-limit"] = String(input.model.limit.context);
       // The config hook may have run while the daemon was down; send the token on every request.
       if (t) output.headers.Authorization = `Bearer ${t}`;
     },

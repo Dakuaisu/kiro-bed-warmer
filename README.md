@@ -11,7 +11,7 @@ so Kiro models start fast and stalls fall back to another model instead of hangi
 [![OpenCode](https://img.shields.io/badge/opencode-1.18.x-111111)](https://opencode.ai)
 [![Platform](https://img.shields.io/badge/platform-macOS-000000?logo=apple&logoColor=white)](#requirements)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](#development)
-[![Tests](https://img.shields.io/badge/tests-52%20unit%20%2B%202%20integration-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-54%20unit%20%2B%202%20integration-brightgreen)](#development)
 
 [Quick start](#quick-start) · [Benchmarks](#benchmarks) · [Configuration](#configuration) · [How it works](#how-it-works) · [Security](#security) · [Troubleshooting](#troubleshooting)
 
@@ -278,7 +278,7 @@ Every route needs `Authorization: Bearer <token>`.
 
 ## Known limits
 
-- **No token counts.** kiro-cli doesn't report them, so OpenCode shows 0 tokens and $0 and won't auto-compact. Kiro compacts its own context. Credits and context % are in the final SSE chunk (`kiro` field) and in `/metrics`.
+- **Estimated token counts, no cost.** kiro-cli reports only context usage %, so the daemon derives `usage` from it: total = % × the model's context window (sent by the plugin), output ≈ streamed characters / 4. OpenCode's context meter therefore matches Kiro's. Cost stays $0: Kiro bills credits, not per-token prices. Credits are in the final SSE chunk (`kiro` field) and in `/metrics`.
 - **Unwarmed directories.** The first message in a directory the plugin hasn't pre-warmed pays one `session/new`, about 0.3 s.
 - **Session files.** kiro-cli keeps its own session files in `~/.kiro/sessions/`, as the existing provider does.
 - **No launchd agent.** The daemon starts on demand and exits when idle.
@@ -287,7 +287,7 @@ Every route needs `Authorization: Bearer <token>`.
 ## Development
 
 ```sh
-npm run check              # tsc (strict) + biome + 52 unit tests against a fake kiro-cli
+npm run check              # tsc (strict) + biome + 54 unit tests against a fake kiro-cli
 npm run test:integration   # 2 tests against real kiro-cli on claude-haiku-4.5
 ```
 

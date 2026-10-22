@@ -54,6 +54,9 @@ function authorized(req: IncomingMessage, token: string): boolean {
   return got.length === want.length && timingSafeEqual(got, want);
 }
 
+/** Used when the request has no x-kbw-context-limit header (no plugin). */
+const DEFAULT_CONTEXT_LIMIT = 200_000;
+
 const header = (req: IncomingMessage, name: string): string | undefined => {
   const v = req.headers[name];
   return typeof v === "string" && v.length > 0 ? v : undefined;
@@ -90,7 +93,9 @@ async function chat(d: HttpDeps, req: IncomingMessage, res: ServerResponse): Pro
     m.role === "system" && typeof m.content === "string" ? [m.content] : [],
   );
   const cwd = resolveCwd(header(req, "x-kbw-cwd"), system.join("\n"), d.cfg.workDir);
-  const sink = new CompletionSink(res, body.model, body.stream ?? false);
+  const limit = Number(header(req, "x-kbw-context-limit"));
+  const contextLimit = Number.isInteger(limit) && limit > 0 ? limit : DEFAULT_CONTEXT_LIMIT;
+  const sink = new CompletionSink(res, body.model, body.stream ?? false, contextLimit);
   const ac = new AbortController();
   res.on("close", () => {
     if (!sink.isEnded) ac.abort();

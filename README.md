@@ -11,7 +11,7 @@ so Kiro models start fast and stalls fall back to another model instead of hangi
 [![OpenCode](https://img.shields.io/badge/opencode-1.18.x-111111)](https://opencode.ai)
 [![Platform](https://img.shields.io/badge/platform-macOS-000000?logo=apple&logoColor=white)](#requirements)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](#development)
-[![Tests](https://img.shields.io/badge/tests-54%20unit%20%2B%202%20integration-brightgreen)](#development)
+[![Tests](https://img.shields.io/badge/tests-56%20unit%20%2B%202%20integration-brightgreen)](#development)
 
 [Quick start](#quick-start) · [Benchmarks](#benchmarks) · [Configuration](#configuration) · [How it works](#how-it-works) · [Security](#security) · [Troubleshooting](#troubleshooting)
 
@@ -90,7 +90,9 @@ npm ci          # local devDependencies only, nothing global
 
 ### 2. Register the plugin and provider
 
-Add this to `~/.config/opencode/opencode.json`. Replace `<ABSOLUTE_PATH>` with the clone location, for example `/Users/you/kiro-bed-warmer`.
+Add the plugin to `~/.config/opencode/opencode.json`. Replace `<ABSOLUTE_PATH>` with the clone location, for example `/Users/you/kiro-bed-warmer`.
+
+The `provider` block below is **optional**: the plugin registers `kiro-warm` with every model kiro-cli offers (context limits, tool calls and, for Claude models, image input). Add the block only to rename models or override fields; your fields win, and anything you leave out is filled in.
 
 ```jsonc
 {
@@ -287,7 +289,7 @@ Every route needs `Authorization: Bearer <token>`.
 ## Development
 
 ```sh
-npm run check              # tsc (strict) + biome + 54 unit tests against a fake kiro-cli
+npm run check              # tsc (strict) + biome + 56 unit tests against a fake kiro-cli
 npm run test:integration   # 2 tests against real kiro-cli on claude-haiku-4.5
 ```
 

@@ -1,4 +1,8 @@
 #!/bin/sh
 # Resolve symlinks so the CLI works when linked onto PATH.
 here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
-exec node "$here/../src/cli/main.ts" "$@"
+# A git checkout runs the TypeScript sources; the npm package ships only the dist/ build.
+if [ -f "$here/../src/cli/main.ts" ]; then
+  exec node "$here/../src/cli/main.ts" "$@"
+fi
+exec node "$here/../dist/src/cli/main.js" "$@"

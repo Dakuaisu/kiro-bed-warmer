@@ -1,16 +1,29 @@
 import type { Plugin } from "@opencode-ai/plugin";
+import { z } from "zod";
 import { call, ensureDaemon, health } from "../src/client.ts";
 import { loadConfig } from "../src/config.ts";
 import { errorMessage } from "../src/log.ts";
+import { buildProvider } from "./provider.ts";
 
 const PROVIDER_ID = "kiro-warm";
 const HEALTH_CACHE_MS = 5000;
 const START_FAILURE_BACKOFF_MS = 30_000;
+const ModelList = z.object({ data: z.array(z.object({ id: z.string() })) });
+
+async function liveModels(cfg: ReturnType<typeof loadConfig>, token: string): Promise<string[]> {
+  try {
+    const res = await call(cfg, token, "GET", "/v1/models");
+    const parsed = ModelList.safeParse(await res.json());
+    return parsed.success ? parsed.data.data.map((m) => m.id) : [];
+  } catch {
+    return [];
+  }
+}
 
 /**
- * Companion plugin for the `kiro-warm` provider: starts the daemon on demand, injects baseURL + bearer token
- * into the provider options in memory (never written to opencode.json), tags requests with the window's
- * directory, and pre-warms a kiro session for that directory.
+ * Companion plugin for the `kiro-warm` provider: starts the daemon on demand, registers the provider (or
+ * completes the user's own block) with baseURL + bearer token in memory (never written to opencode.json),
+ * tags requests with the window's directory, and pre-warms a kiro session for that directory.
  */
 export const KiroWarmPlugin: Plugin = async ({ directory }) => {
   const cfg = loadConfig(process.env);
@@ -44,14 +57,15 @@ export const KiroWarmPlugin: Plugin = async ({ directory }) => {
 
   return {
     config: async (config) => {
-      const provider = config.provider?.[PROVIDER_ID];
-      if (!provider) return;
       const t = await ensure().catch(() => undefined);
-      provider.options = {
-        ...provider.options,
-        baseURL: `http://127.0.0.1:${cfg.port}/v1`,
-        ...(t ? { apiKey: t } : {}),
-      };
+      const live = t ? await liveModels(cfg, t) : [];
+      config.provider ??= {};
+      config.provider[PROVIDER_ID] = buildProvider(
+        config.provider[PROVIDER_ID],
+        live,
+        `http://127.0.0.1:${cfg.port}/v1`,
+        t,
+      );
     },
     "chat.headers": async (input, output) => {
       if (input.model.providerID !== PROVIDER_ID) return;

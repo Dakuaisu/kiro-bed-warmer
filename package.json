@@ -3,8 +3,28 @@
   "version": "0.1.0",
   "description": "Warm, shared kiro-cli ACP daemon exposed as an OpenAI-compatible endpoint for OpenCode",
   "license": "MIT",
-  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Dakuaisu/kiro-bed-warmer.git"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "kiro",
+    "kiro-cli",
+    "acp"
+  ],
   "type": "module",
+  "main": "./dist/plugin/kiro-warm.js",
+  "exports": {
+    ".": "./dist/plugin/kiro-warm.js"
+  },
+  "files": [
+    "dist",
+    "bin",
+    "README.md",
+    "LICENSE"
+  ],
   "engines": {
     "node": ">=24"
   },
@@ -18,7 +38,9 @@
     "format": "biome format --write src test plugin",
     "test": "node --test --test-concurrency=1 --test-timeout=60000 test/unit/*.test.ts",
     "test:integration": "node --test --test-concurrency=1 --test-timeout=600000 test/integration/*.test.ts",
-    "check": "npm run typecheck && npm run lint && npm test"
+    "check": "npm run typecheck && npm run lint && npm test",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "prepublishOnly": "npm run check && npm run build"
   },
   "dependencies": {
     "zod": "4.6.7"

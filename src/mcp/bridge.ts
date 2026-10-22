@@ -22,7 +22,9 @@ const CallParams = z.object({ name: z.string(), arguments: z.record(z.string(), 
 const CancelParams = z.object({ requestId: z.union([z.number(), z.string()]) });
 
 const NC = "/usr/bin/nc";
-const RELAY = new URL("./relay.ts", import.meta.url).pathname;
+// Same extension as this file: .ts when run from source, .js from the published dist/ build.
+const EXT = import.meta.url.endsWith(".ts") ? ".ts" : ".js";
+const RELAY = new URL(`./relay${EXT}`, import.meta.url).pathname;
 
 /**
  * Per-kiro-session MCP server. kiro-cli launches a stdio relay (`nc -U <socket>`) and this

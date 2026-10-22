@@ -4,7 +4,9 @@ import { join } from "node:path";
 import type { Config } from "../config.ts";
 import { childSessions, type DbMessage, latestSession, readSession } from "./ocdb.ts";
 
-const PLUGIN = new URL("../../plugin/kiro-warm.ts", import.meta.url).href;
+// Same extension as this file: .ts when run from source, .js from the published dist/ build.
+const EXT = import.meta.url.endsWith(".ts") ? ".ts" : ".js";
+const PLUGIN = new URL(`../../plugin/kiro-warm${EXT}`, import.meta.url).href;
 
 export type BenchOptions = { providers: string[]; model: string; runs: number; turns: number; port: number };
 

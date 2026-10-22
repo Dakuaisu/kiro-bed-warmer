@@ -15,7 +15,9 @@ export const Health = z.object({
 });
 export type Health = z.infer<typeof Health>;
 
-const MAIN = new URL("./cli/main.ts", import.meta.url).pathname;
+// Same extension as this file: .ts when run from source, .js from the published dist/ build.
+const EXT = import.meta.url.endsWith(".ts") ? ".ts" : ".js";
+const MAIN = new URL(`./cli/main${EXT}`, import.meta.url).pathname;
 
 export async function call(
   cfg: Config,
@@ -71,8 +73,15 @@ export async function ensureDaemon(
     },
   });
   let exited: number | null | undefined;
+  let spawnError: string | undefined;
   child.once("exit", (code) => {
     exited = code;
+  });
+  child.once("error", (err) => {
+    spawnError =
+      "code" in err && err.code === "ENOENT"
+        ? `\`${opts.nodeBin ?? "node"}\` not found on PATH; kiro-bed-warmer needs Node.js >= 24`
+        : err.message;
   });
   child.unref();
   const deadline = Date.now() + (opts.waitMs ?? 15_000);
@@ -80,6 +89,7 @@ export async function ensureDaemon(
     await new Promise((r) => setTimeout(r, 100));
     const h = await health(cfg, token, 500);
     if (h) return { token, health: h };
+    if (spawnError) throw new Error(`could not start kiro-bed-warmer: ${spawnError}`);
     // Exit code 3 = another daemon holds the lock and may still be starting; keep polling for it.
     if (exited !== undefined && exited !== 3) {
       throw new Error(
